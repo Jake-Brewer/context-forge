@@ -1,8 +1,10 @@
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
-import { FileProjectStore, resolveFileByIndex, resolveArtifactPath, deriveArtifactStem, parseSlicePlan, WorktreeService, computeAutoSetFields } from '@context-forge/core/node';
-import type { ProjectData } from '@context-forge/core';
+import { readFile } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
+import { FileProjectStore, resolveFileByIndex, resolveArtifactPath, deriveArtifactStem, parseSlicePlan, WorktreeService, computeAutoSetFields, normalizeArtifactValue, normalizePathFieldValue } from '@context-forge/core/node';
+import type { ProjectData, WorktreeContext } from '@context-forge/core';
 import {
   resolveFieldName,
   resolvePhaseValue,
@@ -13,41 +15,94 @@ import {
   WORKTREE_SCOPED_FIELDS,
   PROJECT_TO_WORKTREE_FIELD,
   formatDateProject,
+  isPathValuedField,
 } from '@context-forge/core';
 import type { FieldGroup } from '@context-forge/core';
 import { resolveProjectId, resolveProjectWorktree, findProjectByCwd } from '../utils/project.js';
+import { withJsonOption, withProjectOption, withYesOption, withProjectLevelOption } from '../options.js';
 import { resolveProject } from '@context-forge/core';
 import { resolveOperationPath, getWorktreeIndexRange, getWorktreeRangeOverride, isInIndexRange } from '../utils/worktree-overlay.js';
 import { handleError, UserError } from '../utils/errors.js';
+import { withPathCheckAsUserError } from '../utils/pathCheck.js';
 import { askConfirmation } from '../utils/confirm.js';
 import { printJson } from '../output/formatter.js';
 import { renderTable } from '../output/tables.js';
-import { label, value as valueStyle, success, dim } from '../output/styles.js';
+import { label, value as valueStyle, success, dim, warn } from '../output/styles.js';
+
+/** Matches `N. [ ] **(NNN) Initiative Name** — ...` in initiative plan files */
+const INITIATIVE_ENTRY_RE = /^\d+\.\s+\[[ xX]\]\s+\*\*\((\d+)\)\s+(.+?)\*\*/;
+
+/**
+ * Find and parse the initiative plan file (e.g., 001-initiative-plan.*.md)
+ * in project-guides/. Returns entries with index and name.
+ */
+async function parseInitiativePlanEntries(
+  basePath: string,
+): Promise<{ index: number; name: string }[]> {
+  const guidesDir = join(basePath, 'project-documents/user/project-guides');
+  let files: string[];
+  try {
+    files = readdirSync(guidesDir);
+  } catch {
+    return [];
+  }
+
+  const planFile = files.find((f) => f.includes('initiative-plan') && f.endsWith('.md'));
+  if (!planFile) return [];
+
+  const content = await readFile(join(guidesDir, planFile), 'utf-8');
+  const entries: { index: number; name: string }[] = [];
+
+  for (const line of content.split('\n')) {
+    const m = INITIATIVE_ENTRY_RE.exec(line.trim());
+    if (m) {
+      entries.push({ index: parseInt(m[1], 10), name: m[2].trim() });
+    }
+  }
+
+  return entries;
+}
 
 /**
  * When a numeric index doesn't match an existing file, try to derive the stem
- * from the slice plan. Only works for fileSlice and fileTasks fields.
+ * from the appropriate plan document.
+ *
+ * - fileSlice / fileTasks: looks up the slice plan
+ * - fileArch / fileSlicePlan: looks up the initiative plan
  */
-async function deriveFromSlicePlan(
+async function deriveFromPlan(
   project: ProjectData,
   field: string,
   index: string,
   operationPath?: string,
 ): Promise<string | null> {
-  if (!project.fileSlicePlan) return null;
   const basePath = operationPath ?? project.projectPath;
   if (!basePath) return null;
-  if (field !== 'fileSlice' && field !== 'fileTasks') return null;
+  const numericIndex = parseInt(index, 10);
 
-  const planRelPath = resolveArtifactPath('fileSlicePlan', project.fileSlicePlan);
-  if (!planRelPath) return null;
+  // fileSlice / fileTasks: derive from slice plan
+  if (field === 'fileSlice' || field === 'fileTasks') {
+    if (!project.fileSlicePlan) return null;
+    const planRelPath = resolveArtifactPath('fileSlicePlan', project.fileSlicePlan);
+    if (!planRelPath) return null;
 
-  const planPath = join(basePath, planRelPath);
-  const plan = await parseSlicePlan(planPath);
-  const entry = plan.entries.find((e) => e.index === parseInt(index, 10));
-  if (!entry) return null;
+    const plan = await parseSlicePlan(join(basePath, planRelPath));
+    const entry = plan.entries.find((e) => e.index === numericIndex);
+    if (!entry) return null;
 
-  return deriveArtifactStem(field, index, entry.name);
+    return deriveArtifactStem(field, index, entry.name);
+  }
+
+  // fileArch / fileSlicePlan: derive from initiative plan
+  if (field === 'fileArch' || field === 'fileSlicePlan') {
+    const entries = await parseInitiativePlanEntries(basePath);
+    const entry = entries.find((e) => e.index === numericIndex);
+    if (!entry) return null;
+
+    return deriveArtifactStem(field, index, entry.name);
+  }
+
+  return null;
 }
 
 /** Shorten an absolute path by replacing the home directory with ~. */
@@ -140,6 +195,17 @@ export function buildSettableFieldsHelp(): string {
   return lines.join('\n');
 }
 
+/**
+ * The value `cf set` should write, or undefined when the command has none (the caller prints
+ * usage). `date` alone means today; an empty value is valid only for a path-valued field, where
+ * it clears the path.
+ */
+export function resolveSetValue(field: string | undefined, val: string | undefined): string | undefined {
+  if (field && !val && /^date/i.test(field)) return 'now';
+  if (val === '' && field && isPathValuedField(resolveFieldName(field) ?? '')) return '';
+  return val || undefined;
+}
+
 /** Shared action handler for `cf set` and `cf project set`. */
 export async function projectSetAction(
   field: string,
@@ -149,13 +215,15 @@ export async function projectSetAction(
   const resolvedField = resolveFieldName(field);
   if (!resolvedField) {
     throw new UserError(
-      `Unknown field: '${field}'. Run 'cf project --schema' to see available fields.`,
+      `Unknown field: '${field}'.`,
+      'FIELD_NOT_FOUND',
+      `Run 'cf project --schema' to see available fields.`,
     );
   }
 
   const fieldDef = PROJECT_FIELDS.find((f) => f.field === resolvedField);
   if (fieldDef?.readonly) {
-    throw new UserError(`Field '${resolvedField}' is read-only and cannot be set.`);
+    throw new UserError(`Field '${resolvedField}' is read-only and cannot be set.`, 'READ_ONLY');
   }
 
   let resolvedValue = val;
@@ -164,7 +232,9 @@ export async function projectSetAction(
     if (!phaseVal) {
       const allowed = fieldDef?.enumValues?.join(', ') ?? '';
       throw new UserError(
-        `Invalid value "${val}" for field "${resolvedField}". Allowed values: ${allowed}`,
+        `Invalid value "${val}" for field "${resolvedField}".`,
+        'INVALID_VALUE',
+        `Allowed values: ${allowed}`,
       );
     }
     resolvedValue = phaseVal;
@@ -177,7 +247,7 @@ export async function projectSetAction(
 
   const validation = validateFieldValue(resolvedField, resolvedValue);
   if (!validation.valid) {
-    throw new UserError(validation.error!);
+    throw new UserError(validation.error!, 'INVALID_VALUE');
   }
 
   const store = new FileProjectStore();
@@ -187,16 +257,30 @@ export async function projectSetAction(
 
   const existing = await store.getById(id);
   if (!existing) {
-    throw new UserError(`Project not found: '${id}'. Run cf project list to see available projects.`);
+    throw new UserError(
+      `Project not found: '${id}'.`,
+      'PROJECT_NOT_FOUND',
+      `Run cf project list to see available projects.`,
+    );
   }
 
   // Index-based file resolution: cf set slice 171 → scans for matching file
   // Falls back to slice plan entry name if file doesn't exist on disk
   const opPath = resolveOperationPath(existing, worktreeId);
 
+  // Path-valued fields hold a checked root-relative file path, not an artifact stem or index:
+  // they skip the artifact warning, stem normalization and index resolution below.
+  const pathValued = isPathValuedField(resolvedField);
+  if (pathValued) {
+    if (!opPath) {
+      throw new UserError(`Project '${existing.name}' has no project path set.`, 'MISSING_CONFIG');
+    }
+    resolvedValue = withPathCheckAsUserError(() => normalizePathFieldValue(opPath, resolvedValue));
+  }
+
   // Warn on non-numeric artifact values that don't match expected patterns
   // Valid patterns: numeric index (handled below), or NNN-type.name stem
-  if (fieldDef?.group === 'artifacts' && !/^\d+$/.test(resolvedValue) && !/^\d+-\w+\./.test(resolvedValue)) {
+  if (fieldDef?.group === 'artifacts' && !pathValued && !/^\d+$/.test(resolvedValue) && !/^\d+-\w+\./.test(resolvedValue)) {
     process.stderr.write(
       `Warning: '${resolvedValue}' doesn't look like a valid artifact value.\n` +
       `  Expected a numeric index (e.g. 200) or artifact stem (e.g. 200-slice.my-feature).\n` +
@@ -204,7 +288,20 @@ export async function projectSetAction(
     );
   }
 
-  if (fieldDef?.group === 'artifacts' && /^\d+$/.test(resolvedValue) && opPath) {
+  // Normalize artifact values: strip directory prefix and .md suffix so that
+  // full paths (e.g. "project-documents/user/architecture/100-arch.foo.md")
+  // and stems with extensions ("100-arch.foo.md") are reduced to bare stems
+  // ("100-arch.foo") before storage. This prevents resolveArtifactPath from
+  // doubling the directory when the value is used later.
+  if (fieldDef?.group === 'artifacts' && !pathValued) {
+    const stripped = normalizeArtifactValue(resolvedValue);
+    if (stripped !== resolvedValue) {
+      process.stderr.write(`  Normalized '${resolvedValue}' → '${stripped}'\n`);
+      resolvedValue = stripped;
+    }
+  }
+
+  if (fieldDef?.group === 'artifacts' && !pathValued && /^\d+$/.test(resolvedValue) && opPath) {
     // Use worktree-resolved project for slice plan lookup (project-level fields
     // may be cleared after migration, but the worktree context has the values)
     const overlaid = await resolveProject(store, id, worktreeId) ?? existing;
@@ -215,12 +312,20 @@ export async function projectSetAction(
       }
     } catch {
       // File doesn't exist — try deriving from slice plan
-      const derived = await deriveFromSlicePlan(overlaid, resolvedField, resolvedValue, opPath);
+      const derived = await deriveFromPlan(overlaid, resolvedField, resolvedValue, opPath);
       if (derived) {
         resolvedValue = derived;
       } else {
+        const searchedPlan = (resolvedField === 'fileSlice' || resolvedField === 'fileTasks')
+          ? overlaid.fileSlicePlan
+          : 'initiative plan';
+        const hint = searchedPlan
+          ? `Searched '${searchedPlan}' — no entry for index ${resolvedValue}. If this index belongs to a different initiative, switch with cf set arch <initiative-index> first.`
+          : `No slice plan is set. Set one with: cf set arch <initiative-index>`;
         throw new UserError(
-          `No file matching index '${resolvedValue}' for field '${resolvedField}', and no slice plan entry found to derive from.`,
+          `No file matching index '${resolvedValue}' for field '${resolvedField}'.`,
+          'ARTIFACT_NOT_FOUND',
+          hint,
         );
       }
     }
@@ -230,7 +335,7 @@ export async function projectSetAction(
     const numericIndex = parseInt(resolvedValue, 10) || parseInt(/^(\d+)/.exec(resolvedValue)?.[1] ?? '', 10);
     const worktreeHasOverride = getWorktreeRangeOverride(existing, worktreeId);
     if (indexRange && !isNaN(numericIndex) && !isInIndexRange(numericIndex, indexRange) && !worktreeHasOverride) {
-      console.warn(`Warning: index ${numericIndex} is outside this worktree's range [${indexRange[0]}-${indexRange[1]}]`);
+      process.stderr.write(warn(`Warning: index ${numericIndex} is outside this worktree's range [${indexRange[0]}-${indexRange[1]}]\n`));
     }
   }
 
@@ -238,6 +343,30 @@ export async function projectSetAction(
   const worktreeName = worktreeId
     ? (existing.worktrees ?? []).find((wt) => wt.id === worktreeId)?.name
     : undefined;
+
+  // Idempotency check: skip write if value is already set
+  const currentValue = (() => {
+    if (worktreeId && isWorktreeField(resolvedField) && !opts.projectLevel) {
+      const wt = (existing.worktrees ?? []).find((w) => w.id === worktreeId);
+      if (wt) {
+        const wtField = PROJECT_TO_WORKTREE_FIELD[resolvedField] ?? resolvedField;
+        return (wt as unknown as Record<string, unknown>)[wtField] as string | undefined;
+      }
+      return undefined;
+    }
+    if (resolvedField.startsWith('customData.')) {
+      const subField = resolvedField.split('.')[1];
+      return (existing.customData as Record<string, string> | undefined)?.[subField];
+    }
+    return (existing as unknown as Record<string, unknown>)[resolvedField] as string | undefined;
+  })();
+
+  if (currentValue === resolvedValue) {
+    const displayName = fieldDef?.aliases[0] ?? resolvedField;
+    const scope = worktreeName ? ` on worktree context "${worktreeName}"` : '';
+    process.stderr.write(`${displayName} already set to ${resolvedValue}${scope}\n`);
+    return;
+  }
 
   // Route worktree-scoped fields to WorktreeService when worktree is resolved
   if (worktreeId && isWorktreeField(resolvedField) && !opts.projectLevel) {
@@ -299,16 +428,18 @@ export async function projectUnsetAction(
   const resolvedField = resolveFieldName(field);
   if (!resolvedField) {
     throw new UserError(
-      `Unknown field: '${field}'. Run 'cf project --schema' to see available fields.`,
+      `Unknown field: '${field}'.`,
+      'FIELD_NOT_FOUND',
+      `Run 'cf project --schema' to see available fields.`,
     );
   }
 
   const fieldDef = PROJECT_FIELDS.find((f) => f.field === resolvedField);
   if (fieldDef?.required) {
-    throw new UserError(`Cannot unset required field '${resolvedField}'.`);
+    throw new UserError(`Cannot unset required field '${resolvedField}'.`, 'INVALID_ARGUMENT');
   }
   if (fieldDef?.readonly) {
-    throw new UserError(`Cannot unset read-only field '${resolvedField}'.`);
+    throw new UserError(`Cannot unset read-only field '${resolvedField}'.`, 'READ_ONLY');
   }
 
   const store = new FileProjectStore();
@@ -318,7 +449,7 @@ export async function projectUnsetAction(
 
   const existing = await store.getById(id);
   if (!existing) {
-    throw new UserError(`Project not found: '${id}'. Run cf project list to see available projects.`);
+    throw new UserError(`Project not found: '${id}'.`, 'PROJECT_NOT_FOUND', `Run cf project list to see available projects.`);
   }
 
   const worktreeName = worktreeId
@@ -338,6 +469,49 @@ export async function projectUnsetAction(
   }
 }
 
+/**
+ * Build a schema-filtered view of a project for `cf get`. Both the JSON and
+ * table outputs consume this same structure so they can never drift apart.
+ * Only fields declared in PROJECT_FIELDS are included; stale legacy keys on
+ * the stored record (e.g. pre-rename `slice`/`taskFile`/`projectDate`) are
+ * silently dropped.
+ */
+interface ProjectGetView {
+  values: Record<string, unknown>;
+  customData: Record<string, unknown>;
+  worktree?: WorktreeContext;
+}
+
+function buildProjectGetView(
+  project: ProjectData,
+  worktree: WorktreeContext | undefined,
+): ProjectGetView {
+  const overlaid: ProjectData = worktree
+    ? applyWorktreeOverlay(project, worktree.id)
+    : project;
+  const overlaidRecord = overlaid as unknown as Record<string, unknown>;
+  const sourceCustom = overlaid.customData as Record<string, unknown> | undefined;
+
+  const values: Record<string, unknown> = {};
+  const customData: Record<string, unknown> = {};
+  for (const f of PROJECT_FIELDS) {
+    if (f.field.startsWith('customData.')) {
+      const subField = f.field.split('.')[1];
+      customData[subField] = sourceCustom?.[subField];
+    } else {
+      values[f.field] = overlaidRecord[f.field];
+    }
+  }
+  return worktree ? { values, customData, worktree } : { values, customData };
+}
+
+/** Flatten the schema-filtered view into a single top-level object for JSON output. */
+function flattenProjectGetView(view: ProjectGetView): Record<string, unknown> {
+  const flat: Record<string, unknown> = { ...view.values, customData: view.customData };
+  if (view.worktree) flat.worktree = view.worktree;
+  return flat;
+}
+
 /** Shared action handler for `cf get` and `cf project get`. */
 export async function projectGetAction(
   opts: { json?: boolean; project?: string; projectLevel?: boolean },
@@ -347,7 +521,7 @@ export async function projectGetAction(
   const project = await store.getById(resolved.id);
 
   if (!project) {
-    throw new UserError(`Project not found: '${resolved.id}'. Run cf project list to see available projects.`);
+    throw new UserError(`Project not found: '${resolved.id}'.`, 'PROJECT_NOT_FOUND', `Run cf project list to see available projects.`);
   }
 
   const worktreeId = resolved.worktreeId;
@@ -355,13 +529,10 @@ export async function projectGetAction(
     ? (project.worktrees ?? []).find((wt) => wt.id === worktreeId)
     : undefined;
 
+  const view = buildProjectGetView(project, worktree);
+
   if (opts.json) {
-    const data = worktreeId ? applyWorktreeOverlay(project, worktreeId) : project;
-    if (worktree) {
-      printJson({ ...data, worktree });
-    } else {
-      printJson(data);
-    }
+    printJson(flattenProjectGetView(view));
     return;
   }
 
@@ -373,46 +544,24 @@ export async function projectGetAction(
     custom: 'Custom',
   };
 
-  // Show worktree header when active
-  if (worktree) {
+  if (view.worktree) {
     console.log(`\n${label('Worktree')}`);
-    console.log(`  ${label('Name:'.padEnd(16))}${valueStyle(worktree.name)}`);
-    console.log(`  ${label('Range:'.padEnd(16))}${valueStyle(`${worktree.indexRange[0]}-${worktree.indexRange[1]}`)}`);
-    if (worktree.worktreePath) {
-      console.log(`  ${label('Path:'.padEnd(16))}${valueStyle(worktree.worktreePath)}`);
+    console.log(`  ${label('Name:'.padEnd(16))}${valueStyle(view.worktree.name)}`);
+    console.log(`  ${label('Range:'.padEnd(16))}${valueStyle(`${view.worktree.indexRange[0]}-${view.worktree.indexRange[1]}`)}`);
+    if (view.worktree.worktreePath) {
+      console.log(`  ${label('Path:'.padEnd(16))}${valueStyle(view.worktree.worktreePath)}`);
     }
   }
 
-  // Build a worktree overlay map for worktree-scoped fields
-  const wtOverlay: Record<string, string | undefined> = {};
-  if (worktree) {
-    wtOverlay['developmentPhase'] = worktree.developmentPhase;
-    wtOverlay['instruction'] = worktree.instruction;
-    wtOverlay['workType'] = worktree.workType;
-    wtOverlay['fileArch'] = worktree.archDoc;
-    wtOverlay['fileSlicePlan'] = worktree.slicePlan;
-    wtOverlay['fileSlice'] = worktree.activeSlice;
-    wtOverlay['fileTasks'] = worktree.activeTaskFile;
-  }
-
-  const projectRecord = project as unknown as Record<string, unknown>;
-  const customData = project.customData as Record<string, unknown> | undefined;
-
   for (const group of FIELD_GROUPS) {
     const groupFields = PROJECT_FIELDS.filter((f) => f.group === group);
-
     console.log(`\n${label(groupLabels[group])}`);
-
     for (const f of groupFields) {
       let v: unknown;
       if (f.field.startsWith('customData.')) {
-        const subField = f.field.split('.')[1];
-        v = customData?.[subField];
-      } else if (worktree && isWorktreeField(f.field)) {
-        // Worktree overlay: use worktree value directly, no fallback to project
-        v = wtOverlay[f.field];
+        v = view.customData[f.field.split('.')[1]];
       } else {
-        v = projectRecord[f.field];
+        v = view.values[f.field];
       }
       const hasValue = v !== undefined && v !== null && v !== '';
       const display = hasValue ? valueStyle(String(v)) : dim('—');
@@ -468,42 +617,35 @@ export function registerProjectCommand(program: Command): void {
       }
     });
 
-  cmd
-    .command('list')
-    .description('List all projects')
-    .option('--json', 'Output as JSON')
-    .action(async (opts: { json?: boolean }) => {
-      try {
-        await projectListAction(opts);
-      } catch (err) {
-        handleError(err);
-      }
-    });
+  const listCmd = cmd.command('list').description('List all projects');
+  withJsonOption(listCmd);
+  listCmd.action(async (opts: { json?: boolean }) => {
+    try {
+      await projectListAction(opts);
+    } catch (err) {
+      handleError(err);
+    }
+  });
 
-  cmd
-    .command('get')
-    .description('Get details for the active project')
-    .option('--json', 'Output as JSON')
-    .option('--project <id>', 'Project ID or name (overrides default)')
-    .option('--project-level', 'Show project-level fields only (skip worktree overlay)')
-    .action(async (opts: { json?: boolean; project?: string; projectLevel?: boolean }) => {
-      try {
-        await projectGetAction(opts);
-      } catch (err) {
-        handleError(err);
-      }
-    });
+  const getCmd = cmd.command('get').description('Get details for the active project');
+  withJsonOption(getCmd);
+  withProjectOption(getCmd);
+  withProjectLevelOption(getCmd);
+  getCmd.action(async (opts: { json?: boolean; project?: string; projectLevel?: boolean }) => {
+    try {
+      await projectGetAction(opts);
+    } catch (err) {
+      handleError(err);
+    }
+  });
 
-  cmd
-    .command('set [field] [value]')
-    .description('Update a field on the active project')
-    .option('--project <id>', 'Project ID or name (overrides default)')
-    .option('--project-level', 'Force update at project level (skip worktree routing)')
-    .addHelpText('after', buildSettableFieldsHelp)
+  const setCmd = cmd.command('set [field] [value]').description('Update a field on the active project');
+  withProjectOption(setCmd);
+  withProjectLevelOption(setCmd);
+  setCmd.addHelpText('after', buildSettableFieldsHelp)
     .action(async (field: string | undefined, val: string | undefined, opts: { project?: string; projectLevel?: boolean }) => {
-      // Allow `cf project set date` (no value) as shorthand for `cf project set date now`
-      const resolvedVal = (!val && field && /^date/i.test(field)) ? 'now' : val;
-      if (!field || !resolvedVal) {
+      const resolvedVal = resolveSetValue(field, val);
+      if (!field || resolvedVal === undefined) {
         console.log(`Usage: cf project set [options] <field> <value>  —  run cf project set --help for details`);
         return;
       }
@@ -514,12 +656,10 @@ export function registerProjectCommand(program: Command): void {
       }
     });
 
-  cmd
-    .command('unset [field]')
-    .description('Unset (clear) a field on the active project')
-    .option('--project <id>', 'Project ID or name (overrides default)')
-    .option('--project-level', 'Force unset at project level (skip worktree routing)')
-    .action(async (field: string | undefined, opts: { project?: string; projectLevel?: boolean }) => {
+  const unsetCmd = cmd.command('unset [field]').description('Unset (clear) a field on the active project');
+  withProjectOption(unsetCmd);
+  withProjectLevelOption(unsetCmd);
+  unsetCmd.action(async (field: string | undefined, opts: { project?: string; projectLevel?: boolean }) => {
       if (!field) {
         console.log(`Usage: cf project unset [options] <field>  —  run cf project unset --help for details`);
         return;
@@ -531,19 +671,17 @@ export function registerProjectCommand(program: Command): void {
       }
     });
 
-  cmd
-    .command('rm [nameOrId]')
-    .description('Remove a project from Context Forge (files on disk are not deleted)')
-    .option('--project <id>', 'Project ID or name (overrides default)')
-    .option('--yes', 'Skip confirmation prompt')
-    .action(async (nameOrId: string | undefined, opts: { project?: string; yes?: boolean }) => {
+  const rmCmd = cmd.command('rm [nameOrId]').description('Remove a project from Context Forge (files on disk are not deleted)');
+  withProjectOption(rmCmd);
+  withYesOption(rmCmd);
+  rmCmd.action(async (nameOrId: string | undefined, opts: { project?: string; yes?: boolean }) => {
       try {
         const store = new FileProjectStore();
         const { id } = await resolveProjectId(nameOrId ?? opts.project, store);
         const project = await store.getById(id);
 
         if (!project) {
-          throw new UserError(`Project not found: '${id}'. Run cf project list to see available projects.`);
+          throw new UserError(`Project not found: '${id}'.`, 'PROJECT_NOT_FOUND', `Run cf project list to see available projects.`);
         }
 
         if (!opts.yes) {

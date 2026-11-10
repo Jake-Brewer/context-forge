@@ -28,6 +28,8 @@ export interface WorktreeContext {
   workType?: 'start' | 'continue';
   /** When true, this worktree intentionally overlaps other ranges (skips chop logic) */
   rangeOverride?: boolean;
+  /** True only for the worktree forward migration created. Not user-settable. */
+  isDefault?: boolean;
 }
 
 /**
@@ -51,9 +53,9 @@ export interface CreateWorktreeInput {
 
 /**
  * Input for updating an existing worktree context.
- * All fields except `id` are updatable.
+ * All fields except `id` and `isDefault` are updatable.
  */
-export type UpdateWorktreeInput = Partial<Omit<WorktreeContext, 'id'>>;
+export type UpdateWorktreeInput = Partial<Omit<WorktreeContext, 'id' | 'isDefault'>>;
 
 /**
  * Validation status for a worktree's filesystem path.
@@ -85,4 +87,37 @@ export interface IndexRangeOverlap {
   overlapStart: number;
   /** End of the overlapping region */
   overlapEnd: number;
+}
+
+/**
+ * Why removing a worktree did not hand its range back to the default worktree
+ * (slice 932). Reported so a still-narrowed default is never silent.
+ */
+export const RangeRestoreSkipReason = {
+  /** The default worktree is pinned with rangeOverride. */
+  RangeOverride: 'range-override',
+  /** The removed range does not touch the default's, so no single range holds both. */
+  NotAdjacent: 'not-adjacent',
+  /** The combined range would overlap another remaining worktree. */
+  WouldOverlap: 'would-overlap',
+} as const;
+
+export type RangeRestoreSkipReason = (typeof RangeRestoreSkipReason)[keyof typeof RangeRestoreSkipReason];
+
+/**
+ * Result of WorktreeService.removeWorktree. When other worktrees remain, at
+ * most one of `restoredRange` and `rangeNotRestored` is set, and neither when
+ * no default worktree remains or the default itself was removed. Neither is
+ * set when `migrated` is true (the last worktree was removed).
+ */
+export interface RemoveWorktreeResult {
+  removed: WorktreeContext;
+  /** True when the last worktree was removed and workflow fields went back to the project. */
+  migrated: boolean;
+  /** The default worktree's new range, after the removed range was handed back to it. */
+  restoredRange?: [number, number];
+  /** Why the default worktree kept its range, and what that range is. */
+  rangeNotRestored?: { reason: RangeRestoreSkipReason; defaultRange: [number, number] };
+  /** The default worktree, present whenever restoredRange or rangeNotRestored is. */
+  defaultWorktree?: { id: string; name: string };
 }

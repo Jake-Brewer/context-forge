@@ -13,38 +13,49 @@ const mockCollect = vi.fn();
 const mockGetStatus = vi.fn();
 const mockGetNext = vi.fn();
 const mockCheck = vi.fn();
-const mockFix = vi.fn();
 const mockCheckAll = vi.fn();
-const mockFixAll = vi.fn();
+const mockApplyFixes = vi.fn();
 const mockWtGetWorktree = vi.fn();
 const mockWtGetWorktreeByName = vi.fn();
 
-vi.mock('@context-forge/core/node', () => ({
-  FileProjectStore: vi.fn().mockImplementation(() => ({
-    getById: mockGetById,
-  })),
-  ConfigManager: vi.fn().mockImplementation(() => ({
-    get: mockConfigGet,
-  })),
-  FutureWorkCollector: vi.fn().mockImplementation(() => ({
-    collect: mockCollect,
-  })),
-  WorkflowNavigator: vi.fn().mockImplementation(() => ({
-    getStatus: mockGetStatus,
-    getNext: mockGetNext,
-  })),
-  ArtifactIntrospector: vi.fn(),
-  ConsistencyChecker: vi.fn().mockImplementation(() => ({
-    check: mockCheck,
-    fix: mockFix,
-    checkAll: mockCheckAll,
-    fixAll: mockFixAll,
-  })),
-  WorktreeService: vi.fn().mockImplementation(() => ({
-    getWorktree: mockWtGetWorktree,
-    getWorktreeByName: mockWtGetWorktreeByName,
-  })),
-}));
+vi.mock('@context-forge/core/node', async () => {
+  const actual = await vi.importActual<typeof import('@context-forge/core/node')>('@context-forge/core/node');
+  return {
+    upstreamLag: vi.fn().mockResolvedValue(null),
+    formatUpstreamLagWarning: vi.fn(),
+    // Real routing (slice 213): for a single checkout it only orchestrates the mocked checker.
+    planRoutedFixes: actual.planRoutedFixes,
+    applyFixPlan: actual.applyFixPlan,
+    resolveInvokingCheckout: actual.resolveInvokingCheckout,
+    scopeCheck: actual.scopeCheck,
+    resolveFixInvokingPath: actual.resolveFixInvokingPath,
+    planFixRun: actual.planFixRun,
+    FileProjectStore: vi.fn().mockImplementation(() => ({
+      getById: mockGetById,
+      getAll: vi.fn().mockResolvedValue([]),
+    })),
+    ConfigManager: vi.fn().mockImplementation(() => ({
+      get: mockConfigGet,
+    })),
+    FutureWorkCollector: vi.fn().mockImplementation(() => ({
+      collect: mockCollect,
+    })),
+    WorkflowNavigator: vi.fn().mockImplementation(() => ({
+      getStatus: mockGetStatus,
+      getNext: mockGetNext,
+    })),
+    ArtifactIntrospector: vi.fn(),
+    ConsistencyChecker: vi.fn().mockImplementation(() => ({
+      check: mockCheck,
+      checkAll: mockCheckAll,
+      applyFixes: mockApplyFixes,
+    })),
+    WorktreeService: vi.fn().mockImplementation(() => ({
+      getWorktree: mockWtGetWorktree,
+      getWorktreeByName: mockWtGetWorktreeByName,
+    })),
+  };
+});
 
 vi.mock('@context-forge/core', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -276,7 +287,7 @@ describe('workflow_status', () => {
     const mockStatus = {
       project: 'test-project',
       phase: 'Phase 6: Implementation',
-      activeSlice: { name: 'test-feature', index: 100, status: 'in-implementation', taskProgress: { completed: 1, total: 2, inferredStatus: 'in-progress' } },
+      activeSlice: { name: 'test-feature', index: 100, status: 'in-implementation', taskProgress: { completed: 1, total: 2, inferredStatus: 'in_progress' } },
       slicePlan: null,
       summary: 'test-project — slice 100 in-implementation (1/2 tasks)',
     };
@@ -293,6 +304,27 @@ describe('workflow_status', () => {
     expect(parsed.project).toBe('test-project');
     expect(parsed.activeSlice?.status).toBe('in-implementation');
     expect(parsed.summary).toContain('slice 100');
+  });
+
+  it('passes a pending-decision slice and its decisions through', async () => {
+    const decisions = [{ heading: 'D1 — First', line: 12 }];
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetStatus.mockResolvedValue({
+      project: 'test-project',
+      phase: 'Phase 4: Slice Design',
+      activeSlice: { name: 'test-feature', index: 100, status: 'pending-decision', pendingDecisions: decisions },
+      slicePlan: null,
+      summary: 'test-project — slice 100 pending-decision',
+    });
+
+    const result = await client.callTool({
+      name: 'workflow_status',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    const parsed = parseResult(result) as { activeSlice: { status: string; pendingDecisions: unknown } };
+    expect(parsed.activeSlice.status).toBe('pending-decision');
+    expect(parsed.activeSlice.pendingDecisions).toEqual(decisions);
   });
 
   it('returns error for missing project', async () => {
@@ -343,6 +375,56 @@ describe('workflow_next', () => {
     const parsed = parseResult(result) as typeof mockNext;
     expect(parsed.recommendation).toContain('Continue implementation');
     expect(parsed.summary).toContain('slice 100');
+  });
+
+  it('includes pendingDecisions when the design has pending PM decisions', async () => {
+    const decisions = [{ heading: 'D1 — First', line: 12 }];
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetNext.mockResolvedValue({
+      recommendation: 'Blocked: design has pending PM decisions',
+      rationale: 'Slice 100 design has 1 decision pending PM confirmation.',
+      summary: 'Blocked — slice 100 has 1 pending PM decision',
+      pendingDecisions: decisions,
+    });
+
+    const result = await client.callTool({
+      name: 'workflow_next',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    expect((parseResult(result) as { pendingDecisions: unknown }).pendingDecisions).toEqual(decisions);
+  });
+
+  it('passes offers from the navigator through to the response', async () => {
+    const offers = [{ id: 'setup-ci', message: 'No CI detected for this project.' }];
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetNext.mockResolvedValue({ recommendation: 'r', rationale: 'r', summary: 's', offers });
+
+    const result = await client.callTool({ name: 'workflow_next', arguments: { projectId: MOCK_PROJECT.id } });
+
+    expect((parseResult(result) as { offers: unknown }).offers).toEqual(offers);
+  });
+
+  it('constructs WorkflowNavigator with a ConfigManager for the project path (review gating needs it)', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetNext.mockResolvedValue({ recommendation: 'r', rationale: 'r', summary: 's' });
+
+    await client.callTool({ name: 'workflow_next', arguments: { projectId: MOCK_PROJECT.id } });
+
+    const { ConfigManager, WorkflowNavigator } = await import('@context-forge/core/node');
+    expect(ConfigManager).toHaveBeenCalledWith(MOCK_PROJECT.projectPath);
+    const configInstance = vi.mocked(ConfigManager).mock.results[0]?.value;
+    expect(WorkflowNavigator).toHaveBeenCalledWith(configInstance);
+  });
+
+  it('passes the review-exemption note in getNext rationale through unchanged (slice 928)', async () => {
+    const rationale = 'Slice 970 is in progress with 2 tasks left to complete. (review gate skipped: slice declares review: none)';
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetNext.mockResolvedValue({ recommendation: 'Continue implementation', rationale, summary: 's' });
+
+    const result = await client.callTool({ name: 'workflow_next', arguments: { projectId: MOCK_PROJECT.id } });
+
+    expect((parseResult(result) as { rationale: string }).rationale).toBe(rationale);
   });
 
   it('returns error for missing project', async () => {
@@ -401,6 +483,44 @@ describe('workflow_check', () => {
     fixErrors: [],
   };
 
+  it('passes review-gate info findings through unchanged and counts them (slice 928)', async () => {
+    const infoFinding = {
+      rule: 'review-gate',
+      severity: 'info',
+      location: '/fake/970-slice.docs-only.md',
+      description: 'Slice 970 is review-exempt (review gate skipped: slice declares review: none) — slice, tasks, and code review gates are skipped. Confirm this is intended.',
+      suggestedFix: 'If reviews are owed, remove review: none from the slice design frontmatter',
+      fixable: false,
+    };
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
+    mockCheckAll.mockResolvedValue({
+      ...MOCK_CHECK_RESULT, findings: [infoFinding], totalFindings: 1, warnings: 0, infos: 1, summary: '1 finding: 1 info',
+    });
+
+    const result = await client.callTool({ name: 'workflow_check', arguments: { projectId: MOCK_PROJECT.id } });
+
+    const parsed = parseResult(result) as { findings: unknown[]; infos: number };
+    expect(parsed.findings).toContainEqual(infoFinding);
+    expect(parsed.infos).toBe(1);
+  });
+
+  it('constructs ConsistencyChecker with a ConfigManager for the project path', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
+    mockCheckAll.mockResolvedValue(MOCK_CHECK_RESULT);
+
+    await client.callTool({
+      name: 'workflow_check',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    const { ConfigManager, ConsistencyChecker } = await import('@context-forge/core/node');
+    expect(ConfigManager).toHaveBeenCalledWith(MOCK_PROJECT.projectPath);
+    const configInstance = vi.mocked(ConfigManager).mock.results[0]?.value;
+    expect(ConsistencyChecker).toHaveBeenCalledWith(expect.anything(), configInstance);
+  });
+
   it('defaults to all-slices mode (calls checkAll)', async () => {
     mockGetById.mockResolvedValue(MOCK_PROJECT);
     mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
@@ -437,7 +557,8 @@ describe('workflow_check', () => {
 
   it('returns fix result when fix=true (all-slices)', async () => {
     mockGetById.mockResolvedValue(MOCK_PROJECT);
-    mockFixAll.mockResolvedValue(MOCK_FIX_RESULT);
+    mockCheckAll.mockResolvedValue(MOCK_CHECK_RESULT);
+    mockApplyFixes.mockResolvedValue(MOCK_FIX_RESULT);
 
     const result = await client.callTool({
       name: 'workflow_check',
@@ -450,13 +571,17 @@ describe('workflow_check', () => {
     expect(parsed.fixLog).toHaveLength(1);
     expect(parsed.fixLog[0].before).toBe('[ ]');
     expect(parsed.fixLog[0].after).toBe('[x]');
-    expect(mockFixAll).toHaveBeenCalled();
+    expect(mockCheckAll).toHaveBeenCalled();
+    expect(mockApplyFixes).toHaveBeenCalled();
+    // Single checkout: the 213 fields are present and empty.
+    expect(parsed).toMatchObject({ deferred: [], commits: [] });
   });
 
   it('uses auto_fix config when fix not specified', async () => {
     mockGetById.mockResolvedValue(MOCK_PROJECT);
     mockConfigGet.mockResolvedValue({ value: true, source: 'user' });
-    mockFixAll.mockResolvedValue(MOCK_FIX_RESULT);
+    mockCheckAll.mockResolvedValue(MOCK_CHECK_RESULT);
+    mockApplyFixes.mockResolvedValue(MOCK_FIX_RESULT);
 
     const result = await client.callTool({
       name: 'workflow_check',
@@ -694,5 +819,89 @@ describe('workflow_check with worktree parity', () => {
     // Same finding from both views should be deduplicated to 1
     expect(parsed.totalFindings).toBe(1);
     expect(parsed.findings).toHaveLength(1);
+  });
+
+  it('attributes each finding to the worktree whose view produced it (#87)', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT_TWO_WORKTREES);
+    mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
+    mockCheckAll
+      .mockResolvedValueOnce(MOCK_CHECK_RESULT_A)
+      .mockResolvedValueOnce(MOCK_CHECK_RESULT_B);
+
+    const result = await client.callTool({
+      name: 'workflow_check',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    const parsed = parseResult(result) as {
+      findings: Array<{ description: string; worktree?: { id: string; name: string } }>;
+    };
+    // workflow_check shares the merge with the CLI, so it must attribute too --
+    // fixing only the CLI would leave this consumer misattributing.
+    expect(parsed.findings.find((f) => f.description === 'Finding from worktree A')?.worktree).toEqual({
+      id: MOCK_WORKTREE.id,
+      name: MOCK_WORKTREE.name,
+      path: MOCK_WORKTREE.worktreePath,
+    });
+    expect(parsed.findings.find((f) => f.description === 'Finding from worktree B')?.worktree).toEqual({
+      id: MOCK_WORKTREE_B.id,
+      name: MOCK_WORKTREE_B.name,
+      path: MOCK_WORKTREE_B.worktreePath,
+    });
+  });
+
+  it('attributes a deduped finding to the first view, deterministically', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT_TWO_WORKTREES);
+    mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
+    mockCheckAll
+      .mockResolvedValueOnce(MOCK_CHECK_RESULT_A)
+      .mockResolvedValueOnce(MOCK_CHECK_RESULT_A);
+
+    const result = await client.callTool({
+      name: 'workflow_check',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    const parsed = parseResult(result) as {
+      findings: Array<{ worktree?: { name: string } }>;
+    };
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0].worktree?.name).toBe(MOCK_WORKTREE.name);
+  });
+
+  it('leaves findings unattributed for a project without worktrees', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
+    mockCheckAll.mockResolvedValue(MOCK_CHECK_RESULT_A);
+
+    const result = await client.callTool({
+      name: 'workflow_check',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    const parsed = parseResult(result) as { findings: Array<Record<string, unknown>> };
+    expect(parsed.findings[0]).not.toHaveProperty('worktree');
+  });
+
+  it('does not derive attribution from location, which is not always a path', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT_TWO_WORKTREES);
+    mockConfigGet.mockResolvedValue({ value: false, source: 'default' });
+    mockCheckAll
+      .mockResolvedValueOnce(MOCK_CHECK_RESULT_A)
+      .mockResolvedValueOnce(MOCK_CHECK_RESULT_B);
+
+    const result = await client.callTool({
+      name: 'workflow_check',
+      arguments: { projectId: MOCK_PROJECT.id },
+    });
+
+    const parsed = parseResult(result) as {
+      findings: Array<{ location: string; worktree?: { name: string } }>;
+    };
+    // Worktree B's finding has location "slice plan entry 250" -- not a
+    // filesystem path at all. It is still attributed, because attribution
+    // comes from the producing view rather than from the location string.
+    const fromB = parsed.findings.find((f) => f.location === 'slice plan entry 250');
+    expect(fromB?.worktree?.name).toBe(MOCK_WORKTREE_B.name);
   });
 });

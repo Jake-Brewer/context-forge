@@ -1,6 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ConfigManager, getUserConfigPath, getProjectConfigPath } from '@context-forge/core/node';
+import {
+  ConfigManager,
+  getUserConfigPath,
+  getProjectConfigPath,
+  getProjectPersonalConfigPath,
+} from '@context-forge/core/node';
 import { errorResult, jsonResult } from './contextTools.js';
 
 export function registerConfigTools(server: McpServer, serverVersion?: string): void {
@@ -26,7 +31,7 @@ export function registerConfigTools(server: McpServer, serverVersion?: string): 
       try {
         const cm = new ConfigManager(projectPath);
         const serverInfo = serverVersion
-          ? { serverVersion, hint: 'Call agent_guide for tool orientation, agent_onboard for new project setup.' }
+          ? { serverVersion, hint: 'Call agent_quickstart for tool orientation, agent_onboard for new project setup.' }
           : undefined;
         if (key) {
           const result = await cm.get(key);
@@ -38,6 +43,7 @@ export function registerConfigTools(server: McpServer, serverVersion?: string): 
           configPaths: {
             user: getUserConfigPath(),
             project: projectPath ? getProjectConfigPath(projectPath) : null,
+            projectPersonal: projectPath ? getProjectPersonalConfigPath(projectPath) : null,
           },
           ...(serverInfo && { serverInfo }),
         });

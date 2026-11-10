@@ -13,10 +13,19 @@ const mockParseSlicePlan = vi.fn();
 const mockResolveArtifactPath = vi.fn();
 
 vi.mock('@context-forge/core/node', () => ({
+  checkGuideMinimum: vi.fn().mockResolvedValue(null),
+  upstreamLag: vi.fn().mockResolvedValue(null),
+  formatUpstreamLagWarning: vi.fn(),
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getAll: mockGetAll,
     getById: mockGetById,
   })),
+
+  // cf build calls ensureGuideReady() before building context.
+  GuideManager: vi.fn().mockImplementation(() => ({
+    ensureCheckout: vi.fn().mockResolvedValue({ action: 'none' }),
+  })),
+
   WorkflowNavigator: vi.fn().mockImplementation(() => ({
     getStatus: mockGetStatus,
   })),
@@ -92,7 +101,7 @@ const sampleStatus = {
     name: 'worktree-cli-commands',
     index: 183,
     status: 'in-implementation',
-    taskProgress: { completed: 2, total: 8, inferredStatus: 'in-progress' },
+    taskProgress: { completed: 2, total: 8, inferredStatus: 'in_progress' },
   },
   slicePlan: null,
   summary: 'test-project — Phase 6 — slice 183 in-implementation',

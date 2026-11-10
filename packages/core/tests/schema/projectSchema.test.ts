@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
+  CONCEPT_PHASE,
   resolveFieldName,
   resolvePhaseValue,
   validateFieldValue,
   getSchema,
   PROJECT_FIELDS,
   FIELD_ALIASES,
+  isPathValuedField,
 } from '../../src/schema/projectSchema.js';
+import { WORKTREE_SCOPED_FIELDS } from '../../src/project-defaults.js';
+import { CODEBASE_REFERENCE_VARIABLES } from '../../src/services/constants.js';
 
 describe('projectSchema', () => {
   describe('resolveFieldName', () => {
@@ -42,6 +46,12 @@ describe('projectSchema', () => {
       expect(resolveFieldName('foobar')).toBeUndefined();
       expect(resolveFieldName('')).toBeUndefined();
       expect(resolveFieldName('xyz')).toBeUndefined();
+    });
+  });
+
+  describe('CONCEPT_PHASE', () => {
+    it.each(['Phase 0: Concept', '0', 'phase 1: concept'])('%s resolves to it', (input) => {
+      expect(resolvePhaseValue(input)).toBe(CONCEPT_PHASE);
     });
   });
 
@@ -166,6 +176,7 @@ describe('projectSchema', () => {
         plan: 'fileSlicePlan',
         hld: 'fileHLD',
         concept: 'fileConcept',
+        comprehension: 'fileComprehension',
         spec: 'fileSpec',
         path: 'projectPath',
         events: 'customData.recentEvents',
@@ -229,6 +240,35 @@ describe('projectSchema', () => {
       for (const canonical of Object.values(FIELD_ALIASES)) {
         expect(fieldNames.has(canonical)).toBe(true);
       }
+    });
+  });
+
+  describe('fileComprehension', () => {
+    it('resolves the comprehension alias', () => {
+      expect(resolveFieldName('comprehension')).toBe('fileComprehension');
+      expect(resolveFieldName('fileComprehension')).toBe('fileComprehension');
+    });
+
+    it('is in the artifacts group', () => {
+      const def = PROJECT_FIELDS.find((f) => f.field === 'fileComprehension');
+      expect(def?.group).toBe('artifacts');
+    });
+
+    it('is the only path-valued field', () => {
+      expect(isPathValuedField('fileComprehension')).toBe(true);
+      const others = PROJECT_FIELDS.filter((f) => f.field !== 'fileComprehension');
+      for (const f of others) {
+        expect(isPathValuedField(f.field)).toBe(false);
+      }
+    });
+
+    it('is not worktree-scoped', () => {
+      expect(WORKTREE_SCOPED_FIELDS.has('fileComprehension')).toBe(false);
+    });
+
+    it('the profile variable name is this schema field, in the artifacts group', () => {
+      const def = PROJECT_FIELDS.find((f) => f.field === CODEBASE_REFERENCE_VARIABLES.comprehension);
+      expect(def?.group).toBe('artifacts');
     });
   });
 });

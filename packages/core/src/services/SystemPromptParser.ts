@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { ContextProfileParser } from './ContextProfileParser.js';
 import { SpecialPromptKeys, type SystemPrompt, type ParsedPromptFile, type PromptCacheEntry } from '../types/prompts.js';
 
 /**
@@ -23,7 +24,12 @@ export class SystemPromptParser {
   /**
    * Parse the entire prompt file and extract all sections
    */
-  async parsePromptFile(): Promise<ParsedPromptFile> {
+  parsePromptFile(): Promise<ParsedPromptFile> {
+    // Executor throws surface as rejections, preserving the async contract
+    return new Promise((resolve) => resolve(this.parsePromptFileSync()));
+  }
+
+  private parsePromptFileSync(): ParsedPromptFile {
     // Check if file exists
     if (!fs.existsSync(this.filePath)) {
       throw new Error(`System prompt file not found at ${this.filePath}`);
@@ -186,6 +192,11 @@ export class SystemPromptParser {
     const phaseMatch = instruction.match(/^Phase\s+\d+:\s*(.+)$/i);
     const extractedName = phaseMatch ? phaseMatch[1].toLowerCase() : null;
 
+    // An exact key wins over fuzzy matching; keys are hyphenated, so accept spaces for hyphens.
+    const keyForm = instructionLower.trim().replace(/\s+/g, '-');
+    const exactKeyMatch = parsed.prompts.find(prompt => prompt.key.toLowerCase() === keyForm);
+    if (exactKeyMatch) return exactKeyMatch;
+
     const match = parsed.prompts.find(prompt => {
       const nameLower = prompt.name.toLowerCase();
       const keyLower = prompt.key.toLowerCase();
@@ -204,6 +215,23 @@ export class SystemPromptParser {
     });
 
     return match || null;
+  }
+
+  /**
+   * The context-profile variables the guide declares for a prompt key (the `_default` profile
+   * when the key has no entry; empty when the file has no profiles block).
+   */
+  async getProfileVariables(promptKey: string): Promise<string[]> {
+    let content: string;
+    try {
+      content = await fs.promises.readFile(this.filePath, 'utf-8');
+    } catch (error) {
+      // readFile only rejects with filesystem errors, which carry a `code`.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      throw new Error(`System prompt file not found at ${this.filePath}`, { cause: error });
+    }
+    const profileParser = new ContextProfileParser();
+    return profileParser.getProfileForInstruction(promptKey, profileParser.parseProfiles(content));
   }
 
   /**
@@ -236,7 +264,7 @@ export class SystemPromptParser {
       }
 
       return cached.prompts;
-    } catch (error: unknown) {
+    } catch {
       // File might not exist, cache is invalid
       this.promptsCache.delete(this.filePath);
       return null;

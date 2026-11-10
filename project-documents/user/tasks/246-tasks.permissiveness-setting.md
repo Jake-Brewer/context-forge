@@ -1,0 +1,193 @@
+---
+docType: tasks
+slice: permissiveness-setting
+project: context-forge
+lld: project-documents/user/slices/246-slice.permissiveness-setting.md
+dependencies:
+- 245
+projectState: 'Slice 245 (workflow.decision_gate_enabled) is merged. ai-project-guide#46
+  is closed; guide v0.21.9 is installed in this repo and ships rules/permissiveness/cautious.md
+  and autonomous.md. Nothing in Context Forge reads a permissiveness setting yet (issue
+  #122).'
+dateCreated: 20261019
+dateUpdated: 20261019
+status: complete
+turns: 39
+promptTokens: 2471586
+cachedTokens: 2379171
+cacheWriteTokens: 92345
+completionTokens: 26384
+durationSeconds: 296.8
+costUsd: 1.742836
+usageRounds: 2
+pricedRounds: 2
+revision_number: 1
+---
+
+# Tasks: Permissiveness Setting (Slice 246)
+
+## Context Summary
+
+- Working on slice 246, `permissiveness-setting` (issue #122). Design: `user/slices/246-slice.permissiveness-setting.md`. Decisions D1–D7 there are the spec; tasks cite them rather than repeating them.
+- New config key `workflow.permissiveness` (`cautious` | `standard` | `autonomous`, default `standard`). On every `cf build` / MCP `context_build`, a new resolver reads the key for the checkout. When the phase applies (Phase 4, 5 or 6) and the level is not `standard`, it loads `<guide>/project-guides/rules/permissiveness/<level>.md`, strips the frontmatter, and the template engine renders the body as its own section right after the instruction prompt.
+- `standard` adds nothing (D4). A missing, unreadable, or empty fragment in an applicable phase fails the build (D6). cf never enforces `BLOCKED:` (D7). `cf setup-ide` does not change (D3); a test pins that it ignores the `permissiveness/` subdirectory (D2).
+- Prerequisite is satisfied: the guide request (ai-project-guide#46) shipped in v0.21.9, and this repo's installed guide is already v0.21.9 (commit `bb1e06b9`). Implementation Notes steps 1 and 7 are therefore already done.
+- Verified code anchors (as of 20261019):
+  - `packages/core/src/config/ConfigKeys.ts`: `CONFIG_KEYS` (:19). `workflow.decision_gate_enabled` (:77) and the enum-typed `workflow.review_threshold` (:84) are the models. `ConfigManager.ts:101` already rejects a non-enum string with `must be one of [...]`; no new validator code is needed.
+  - `packages/core/src/schema/projectSchema.ts`: `SLICE_DESIGN_PHASE` (:36), `TASK_BREAKDOWN_PHASE` (:39), `IMPLEMENTATION_PHASE` (:42). Values are the display strings, e.g. `Phase 5: Task Breakdown`.
+  - `packages/core/src/services/integrationBranchResolver.ts`: the pattern to copy (exported const typed by a resolver type declared in `ContextIntegrator.ts:20`).
+  - `packages/core/src/services/CoreServiceFactory.ts`: `resolvePromptFilePath` (:19) throws when the guide is missing; `createContextPipeline` (:39) builds the `ContextIntegrator` with positional resolver arguments (:51).
+  - `packages/core/src/services/ContextIntegrator.ts`: constructor (:62), `generateWithTemplateEngine` (~:100) computes `checkoutPath` and calls the two existing resolvers (:117–:127). `mapProjectToEnhancedContext` sets `instruction: project.instruction || 'implementation'` (:163).
+  - `packages/core/src/services/ContextTemplateEngine.ts`: `buildTemplate` (:72). The instruction section has `order: 3`, additional notes `order: 4`. `processSection` (:180) omits the title line when `title` is `''`.
+  - `packages/core/src/types/context.ts`: `ContextData` (:6) holds `integrationBranch` / `targetBranch` (:33).
+  - `packages/core/src/services/constants.ts`: `PROMPT_FILE_RELATIVE_PATH` = `project-documents/ai-project-guide/project-guides/prompt.ai-project.system.md`.
+  - `packages/cli/src/ideInstall/fsChecks.ts`: `listMarkdownFiles` (:37). `packages/cli/src/ideInstall/paths.ts`: `guidePaths().rules` (:21). Tests: `packages/cli/tests/ideInstall/rules.test.ts` (`listMarkdownFiles` :58, `compileAlwaysOnRules` :103).
+  - Existing tests to extend: `packages/core/tests/config/ConfigKeys.test.ts`, `packages/core/tests/services/{integrationBranchResolver,ContextIntegrator,ContextTemplateEngine,CoreServiceFactory}.test.ts`, `packages/cli/tests/integration/build.integration.test.ts`, `packages/mcp-server/tests/integration/mcpIntegration.test.ts` (real core, no mocks). Core fixture guide: `packages/core/tests/fixtures/test-project/`.
+  - `README.md` "Key configuration" table (~:382).
+- Note on `instruction` values: the fixture projects use the short name `implementation`, and `mapProjectToEnhancedContext` defaults an unset instruction to it. Under D5 that is **not** a phase string, so the section is omitted. Tests that expect the section must set `instruction` to a schema phase constant.
+- Use the local build for manual checks: `node packages/cli/dist/index.js`. The global `cf` is the published npm build.
+- Verification commands: `pnpm -r build`, `pnpm lint`, `pnpm typecheck`, `pnpm --filter @context-forge/core test`, `pnpm --filter @context-forge/cli test`, `pnpm --filter @context-forge/mcp test`.
+
+---
+
+## Task 0: Pre-flight
+
+- [x] Read the target: `node packages/cli/dist/index.js config get git.integration_branch`. Empty means the target is `main`.
+- [x] Confirm a clean working tree (`git status --short`).
+- [x] Create the slice branch from the target: `git checkout -b 246-slice.permissiveness-setting {target}`. If the branch already exists, switch to it instead.
+- [x] Run `pnpm -r build` and `pnpm --filter @context-forge/core test` once, to record a green baseline.
+  - [x] Success: you are on `246-slice.permissiveness-setting` and the baseline build and tests pass. If the baseline fails, stop and report it. Do not fix unrelated failures in this slice.
+- **Effort:** 1/5
+
+---
+
+## Task 1: Config key and level constants, with tests (D1)
+
+- [x] In `packages/core/src/config/ConfigKeys.ts`, export two constants above `CONFIG_KEYS`:
+  - [x] `PERMISSIVENESS_LEVELS = ['cautious', 'standard', 'autonomous'] as const`, plus a `PermissivenessLevel` type derived from it.
+  - [x] `STANDARD_PERMISSIVENESS: PermissivenessLevel`, taken from the array (not re-typed as a literal). It is both the default and the one level with no fragment (D4).
+- [x] Add `workflow.permissiveness` next to `workflow.decision_gate_enabled`: `type: 'string'`, `default: STANDARD_PERMISSIVENESS`, `enum: [...PERMISSIVENESS_LEVELS]`, `scope: ConfigScope.Shared`. Description: how readily AI work waits on the PM; `cf build` adds the guide's `rules/permissiveness/<level>.md` in Phases 4–6; `standard` adds nothing.
+- [x] Export `PERMISSIVENESS_LEVELS`, `STANDARD_PERMISSIVENESS`, and `PermissivenessLevel` from the same entry point that exports the other `ConfigKeys` symbols.
+- [x] Tests in `packages/core/tests/config/ConfigKeys.test.ts`:
+  - [x] The key is a shared string, its default is `standard`, and its `enum` equals `PERMISSIVENESS_LEVELS`.
+  - [x] With a real `ConfigManager` on a temp dir: each of the three levels is accepted by `set`; `bogus` is rejected and the error message contains every level name (loop over `PERMISSIVENESS_LEVELS`; do not type the names again).
+  - [x] Success: `pnpm typecheck` and `pnpm --filter @context-forge/core test -- ConfigKeys` pass, and `grep -rn "'autonomous'" packages/core/src` matches only `ConfigKeys.ts`.
+- [x] Commit: `feat(core): add workflow.permissiveness config key`
+- **Effort:** 1/5
+
+---
+
+## Task 2: `permissivenessResolver.ts`, with tests (D4, D5, D6)
+
+- [x] Create `packages/core/tests/fixtures/permissiveness/` and copy into it, byte for byte, the installed guide files `project-documents/ai-project-guide/project-guides/rules/permissiveness/cautious.md` and `autonomous.md` (v0.21.9). These are the real-shape fixtures the design requires.
+  - [x] Success: `diff` between each fixture and its installed source prints nothing.
+- [x] In `packages/core/src/services/ContextIntegrator.ts`, next to `IntegrationBranchResolver` (:20), declare `export type PermissivenessResolver = (checkoutPath: string, instruction: string) => Promise<string>;`.
+- [x] Create `packages/core/src/services/permissivenessResolver.ts` (Node only), modeled on `integrationBranchResolver.ts`. Module constants, each defined once:
+  - [x] `PERMISSIVENESS_PHASES`: a `ReadonlySet<string>` of `SLICE_DESIGN_PHASE`, `TASK_BREAKDOWN_PHASE`, `IMPLEMENTATION_PHASE` imported from `schema/projectSchema.ts` (D5). Export it for tests.
+  - [x] `PERMISSIVENESS_FRAGMENT_DIR`: `rules/permissiveness`, relative to the guide's `project-guides` directory.
+- [x] Export `resolvePermissivenessForPrompt: PermissivenessResolver`, implementing D4–D6:
+  - [x] Outside `PERMISSIVENESS_PHASES`, or at `STANDARD_PERMISSIVENESS`, return `''`. Outside the phases, return before reading the guide, so a bad fragment cannot fail a non-applicable build (D6, last bullet).
+  - [x] Read the level with `ConfigManager` for the checkout; a read error propagates, as in `integrationBranchResolver.ts`.
+  - [x] Locate the guide with `resolvePromptFilePath` (Interfaces Required); the fragment is `<PERMISSIVENESS_FRAGMENT_DIR>/<level>.md` beside the prompt file.
+    - Done as: `resolvePromptFilePath` moved to `services/promptFilePath.ts` and re-exported from `CoreServiceFactory`, so the resolver does not import the factory (avoids a cycle).
+  - [x] Raise each D6 error with the content D6 lists, strip frontmatter as D6 describes, and return the body.
+- [x] No fallback to `standard` anywhere.
+- [x] Tests in new `packages/core/tests/services/permissivenessResolver.test.ts`. Build a temp checkout per test: copy the core fixture guide's `prompt.ai-project.system.md` into the guide path, copy the fixtures above into `rules/permissiveness/` as a test needs them, and set the level with a real `ConfigManager`.
+  - [x] `it.each` over `PERMISSIVENESS_PHASES`: `autonomous` and `cautious` each return the fixture body. The result starts with `### Permissiveness: <level>` and contains no `---` or `name:` line.
+  - [x] Non-applicable phases (`ARCHITECTURE_PHASE` and `Phase 0: Concept` via `PHASE_MAP['0']`): `''` for `autonomous`, even with **no guide** in the checkout. That proves the phase check comes first.
+  - [x] A custom instruction string, and `implementation` (the integrator's default for an unset instruction): `''`.
+  - [x] Key unset and key `standard` in an applicable phase: `''`, even with no fragment files present.
+  - [x] D6 failures, each `rejects.toThrow` with a message check: no guide installed (the `resolvePromptFilePath` error); fragment file missing (message has the level, the path, and `cf guides update`); unreadable file (a directory named `autonomous.md` is a portable way to force a read error); empty file; whitespace-only file; frontmatter-only file.
+  - [x] Frontmatter stripping: the real fixture with `\r\n` line endings, and a delimiter line with trailing spaces, both give the same body as the `\n` fixture.
+  - [x] Worktree: two temp checkouts with different levels each get their own fragment.
+  - [x] Success: `pnpm typecheck`, `pnpm lint`, and `pnpm --filter @context-forge/core test -- permissivenessResolver` pass.
+- [x] Commit: `feat(core): add permissiveness fragment resolver`
+- **Effort:** 3/5
+
+---
+
+## Task 3: Integrator and engine wiring, with tests
+
+- [x] `packages/core/src/types/context.ts`: add `permissivenessFragment?: string` to `ContextData`, after `targetBranch`, with a one-line doc comment ("Guide fragment for workflow.permissiveness; empty or undefined when none applies.").
+- [x] `ContextIntegrator.ts`:
+  - PM decision (option A): `generateContextFromProject` catches all errors and returns an error stub, so a rejecting resolver would not fail the build. Added `PermissivenessFragmentError` (in ContextIntegrator.ts, browser-safe). The resolver wraps every failure past the phase check in it; the integrator's catch rethrows only that class. Task 5 smoke tests must also cover the failure case: `cf build` exits non-zero and `context_build` returns an error when the fragment is missing.
+  - [x] Add a sixth constructor parameter `resolvePermissivenessFn: PermissivenessResolver | null = null`, stored like `resolveIntegrationBranchFn`, with a matching `@param` line.
+  - [x] In `generateWithTemplateEngine`, after the integration-branch block: when the function and `checkoutPath` are set, `enhancedData.permissivenessFragment = await this.resolvePermissivenessFn(checkoutPath, enhancedData.instruction)`. Use `enhancedData.instruction`, the same value that selects the instruction prompt (D5). Errors propagate.
+  - [x] Update the comment above the lookups ("Both lookups…") so it covers all three.
+- [x] `ContextTemplateEngine.buildTemplate`: after the instruction section, push a section only when `data.permissivenessFragment?.trim()` is non-empty: `key: 'permissiveness'`, `title: ''` (the fragment carries its own heading), `content: data.permissivenessFragment`, `conditional: false`, `order: 3.5`. Comment it `// 3.5. Permissiveness fragment (conditional, slice 246)`.
+- [x] Tests:
+  - [x] `ContextIntegrator.test.ts`, next to the integration-branch tests (~:277): the resolver gets the worktree path when a worktree is selected and the project path otherwise, and gets the instruction value; its return value lands on `permissivenessFragment`; a rejecting resolver rejects `generateContextFromProject`; with no resolver injected the field stays `undefined`.
+  - [x] `ContextTemplateEngine.test.ts`: with a fragment, the output contains it once, after `### Instruction Prompt` and before `## Additional Instructions`; with `''`, `'   '` or `undefined`, the output equals the output for the same data without the field.
+  - [x] Success: `pnpm typecheck` and `pnpm --filter @context-forge/core test -- ContextIntegrator ContextTemplateEngine` pass, and existing tests in both files pass unmodified.
+- [x] Commit: `feat(core): render permissiveness fragment after instruction prompt`
+- **Effort:** 2/5
+
+---
+
+## Task 4: Pipeline wiring and pipeline test
+
+- [x] `CoreServiceFactory.ts`: import `resolvePermissivenessForPrompt` and pass it as the sixth argument to `new ContextIntegrator(...)`. This one change covers `cf build` and `context_build`.
+- [x] Tests in `packages/core/tests/services/CoreServiceFactory.test.ts`, each on a temp copy of `fixtures/test-project` with the Task 2 fixtures in `rules/permissiveness/`:
+  - [x] `autonomous`, `instruction: TASK_BREAKDOWN_PHASE`: the output contains the fragment body, positioned after the instruction prompt text and before the next section.
+  - [x] Byte-identical default: for each phase in `PERMISSIVENESS_PHASES`, the output with the key unset equals the output of a `ContextIntegrator` built by hand with the same arguments minus the permissiveness resolver.
+  - [x] Success: `pnpm --filter @context-forge/core test` passes in full.
+- [x] Commit: `feat(core): wire permissiveness resolver into context pipeline`
+- **Effort:** 2/5
+
+---
+
+## Task 5: CLI and MCP smoke tests
+
+- [x] `packages/cli/tests/integration/build.integration.test.ts`: one test on a temp copy of the MCP integration fixture project, with the `autonomous` fixture added at `rules/permissiveness/` and the key set to `autonomous`. Override `instruction` to `IMPLEMENTATION_PHASE` and assert the output contains `### Permissiveness: autonomous`.
+  - Note: `cf build` prints the context only with `--json`; the CLI test uses it. `PERMISSIVENESS_FRAGMENT_DIR` is exported from core/node for the CLI and MCP tests.
+- [x] `packages/mcp-server/tests/integration/mcpIntegration.test.ts`: one `context_build` test on the same kind of temp copy, asserting the same heading in the tool result. If the fixture registry makes a temp copy impractical, add the fragment and config to a per-test temp copy of the registry the file already uses. Do not modify the shared fixture on disk.
+- [x] Failure case: with level `autonomous` and no fragment file, `cf build` exits non-zero naming the path, and `context_build` returns an MCP error.
+- [x] No parity matrix: both share `createContextPipeline` (design, Technical Requirements).
+  - [x] Success: `pnpm --filter @context-forge/cli test` and `pnpm --filter @context-forge/mcp test` pass, and `git status` shows no changes under any `tests/fixtures/` directory except `packages/core/tests/fixtures/permissiveness/`.
+- [x] Commit: `test: add cf build and context_build permissiveness smoke tests`
+- **Effort:** 2/5
+
+---
+
+## Task 6: setup-ide ignores the `permissiveness/` subdirectory (D2)
+
+- [x] In `packages/cli/tests/ideInstall/rules.test.ts`, add one test. In a temp rules directory, put `general.md` (with `alwaysApply: true` frontmatter, like the existing fixtures) and `permissiveness/autonomous.md` (the fixture added in Task 2).
+  - [x] `listMarkdownFiles(rulesDir)` returns only `general.md`.
+  - [x] `compileAlwaysOnRules` output does not contain `Permissiveness: autonomous`.
+- [x] No source change in `packages/cli/src`. If the test fails, stop and report it: it means setup-ide would install the fragments, which contradicts D2.
+  - [x] Success: `pnpm --filter @context-forge/cli test -- rules` passes, and every existing setup-ide test (including `realGuide.test.ts` and the snapshots) passes unmodified.
+- [x] Commit: `test(cli): pin that setup-ide ignores rules subdirectories`
+- **Effort:** 1/5
+
+---
+
+## Task 7: Documentation
+
+- [x] `README.md` "Key configuration" table (~:386, after `workflow.decision_gate_enabled`): add `workflow.permissiveness | shared | How readily AI work waits on the PM: cautious, standard (default) or autonomous. Applied by cf build in Phases 4–6.`
+- [x] `README.md`: below the table, add a short **Permissiveness** subsection:
+  - [x] the three levels and what each means (D1), and that `standard` adds nothing;
+  - [x] that `cf build` / `context_build` add the fragment after the instruction prompt in Phases 4, 5 and 6 only, and that a change applies at the next build with no `cf setup-ide`;
+  - [x] the fragment path convention `project-guides/rules/permissiveness/<level>.md`, owned by ai-project-guide (v0.21.9 or later);
+  - [x] that a missing fragment fails the build and `cf guides update` fixes it;
+  - [x] that cf does not read or enforce `BLOCKED:` lines (D7), and that sessions outside `cf build` / `/cf:build` do not get the setting (D3).
+- [x] `CHANGELOG.md` `[Unreleased]`: one line for `workflow.permissiveness` (#122).
+  - [x] Success: every key, level, path, and command name in the docs matches the code. Cross-check with `grep -rn "permissiveness" packages/*/src`.
+- [x] Commit: `docs: document workflow.permissiveness`
+- **Effort:** 1/5
+
+---
+
+## Task 8: CI check and walkthrough
+
+- [x] Run the CI sequence from `.github/workflows/ci.yml`, in its order: `pnpm install --frozen-lockfile`, `pnpm -r build`, `pnpm typecheck`, `pnpm lint`, `pnpm test`. Every step passes.
+- [x] Run the design's **Verification Walkthrough** steps 1–6 in this repo with `node packages/cli/dist/index.js`, saving outputs in the session scratchpad, not the repo:
+  - [x] Step 1: set phase 4 and save the `build` output; `config get workflow.permissiveness` prints `standard`.
+  - [x] Step 2: the installed guide already has `autonomous.md`; no test fragment is needed. Set `autonomous` and rebuild; the fragment follows the instruction prompt. Call `context_build` through the MCP server (or the `mcpIntegration` test harness) and confirm the same section.
+  - [x] Step 3: set phase 2 and rebuild; no `### Permissiveness:` heading.
+  - [x] Step 4: move the installed `rules/permissiveness/cautious.md` aside, set `cautious`, set phase 4 and build; the build fails naming the missing path. The file is tracked in git: restore it with `git restore` on its path and confirm `git status` shows no guide change.
+  - [x] Step 5: `config set workflow.permissiveness bogus` is rejected and lists the three levels.
+  - [x] Step 6: set `standard`, rebuild, and `diff` against step 1; no difference.
+  - [x] Finish with `config unset workflow.permissiveness` and restore the phase to what it was before step 1.
+  - [x] Success: every step gives the expected result, and `git status` shows no stray config, guide, or project-state changes.
+- [x] Commit any corrections with the matching semantic prefix. If there is nothing to commit, note that in the task-checker update.
+- **Effort:** 1/5

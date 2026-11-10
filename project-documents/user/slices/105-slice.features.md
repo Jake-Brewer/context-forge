@@ -5,9 +5,11 @@ type: slice
 github: null
 dependencies: [foundation]
 projectState: Foundation slice complete - ready for feature development
-status: not-started
+status: not_started
 dateCreated: 20250911
 dateUpdated: 20250127
+docType: slice-design
+slice: features
 ---
 
 # Feature Slices Low-Level Design: context-builder

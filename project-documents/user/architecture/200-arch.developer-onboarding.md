@@ -6,8 +6,8 @@ project: context-forge
 archIndex: 200
 component: developer-onboarding
 dateCreated: 20260314
-dateUpdated: 20260314
-status: in-progress
+dateUpdated: 20261014
+status: complete
 relatedSlices: []
 riskLevel: low
 ---
@@ -235,6 +235,15 @@ The enhanced guidance is triggered by detecting sparse project state (few or no 
 - **160-band (complete):** Config system, guide management, CLI foundation, workflow navigator, consistency checker, context profiles. All provide infrastructure this initiative consumes.
 - **180-band (complete):** Worktree support. `cf init` must be worktree-aware (don't re-register a project when running from a worktree of an already-registered project).
 - **ai-project-guide:** Guide install mechanism already exists. Init composes it.
+
+### Docs-Only Guide Boundary (PM decision 20261011)
+
+The ai-project-guide becomes docs only: no executables ship in it. The reasons are that a docs-only guide is less obtrusive in client repos, and corporate agents flag fewer false positives. That changes this initiative's relationship to the guide, from composing a guide script to owning the logic.
+
+- **cf owns executable methodology tooling.** That's IDE setup, structural document checks, and anything else that used to be a guide script. It runs natively in cf, reading the guide's content at run time. Slice 214 ports `validate-slice-design`; slice 215 ports `setup-ide` and `setup-ide-lint.sh`.
+- **The guide owns content:** prompts, process guides, templates, rules, agents, skills and lint materials (configs and `required` lists). cf hard-codes none of it. It reads the installed guide, so content changes ship with guide releases.
+- **Release coupling:** each script is removed from the guide only in the guide release after the cf release that stops depending on it. An older cf paired with a newer guide can break, which the PM accepted: guide releases follow cf releases.
+- **Protected paths:** content cf reads at run time must survive a tarball install. `guide.exclude` already refuses to exclude `project-guides/` and its `templates/` (slice 212, `PROTECTED_GUIDE_PATHS`).
 
 ## Anticipated Slices
 

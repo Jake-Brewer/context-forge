@@ -1,12 +1,24 @@
-import { FileProjectStore, buildModel, mergeProjectModels } from '@context-forge/core/node';
+import { join } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import {
+  FileProjectStore,
+  ArtifactIntrospector,
+  buildModel,
+  mergeProjectModels,
+  resolveInitiativePlanPath,
+} from '@context-forge/core/node';
 import { extractSliceIndex } from '@context-forge/core/node';
 import { resolveProjectWorktree } from '../utils/project.js';
-import { resolveProject } from '@context-forge/core';
-import { resolveOperationPath, getWorktreeIndexRange, isInIndexRange, resolveAllOperationPaths } from '../utils/worktree-overlay.js';
+import { resolveProject, deriveEntryStatus, normalizeStatus } from '@context-forge/core';
+import {
+  resolveOperationPath,
+  resolveAllOperationPaths,
+} from '../utils/worktree-overlay.js';
 import { UserError } from '../utils/errors.js';
 import { printJson } from '../output/formatter.js';
 import { renderTable } from '../output/tables.js';
 import { label, success, dim } from '../output/styles.js';
+import { renderEntryStatus, type DisplayStatus } from '../output/entryStatusDisplay.js';
 
 /** Shared action handler for listing architecture initiatives. */
 export async function archListAction(opts: { json?: boolean; all?: boolean; project?: string }): Promise<void> {
@@ -29,28 +41,138 @@ export async function archListAction(opts: { json?: boolean; all?: boolean; proj
     );
   }
 
-  let model;
-  let indexRange: [number, number] | undefined;
+  // Initiatives are never range-filtered (#97, D7), so only the operation path
+  // is worktree-derived here.
+  const operationPath =
+    opts.all && rawProject.worktrees?.length
+      ? project.projectPath
+      : resolveOperationPath(project, worktreeId) ?? project.projectPath;
 
-  if (opts.all && rawProject.worktrees?.length) {
+  // Attempt initiative-plan-driven listing first
+  const initiativePlanPath = await resolveInitiativePlanPath(operationPath);
+
+  if (initiativePlanPath) {
+    await archListFromPlan(initiativePlanPath, operationPath, project, opts);
+    return;
+  }
+
+  // Fallback: filesystem-scan based listing (legacy buildModel behavior)
+  await archListFromModel(opts, project, rawProject, operationPath);
+}
+
+/** List initiatives driven from the initiative plan file (primary path). */
+async function archListFromPlan(
+  initiativePlanPath: string,
+  operationPath: string,
+  project: ReturnType<typeof resolveProject> extends Promise<infer T> ? NonNullable<T> : never,
+  opts: { json?: boolean; all?: boolean },
+): Promise<void> {
+  const introspector = new ArtifactIntrospector();
+  const planResult = await introspector.parseSlicePlan(initiativePlanPath);
+
+  // No range filter: an initiative plan is a project-level artifact, while
+  // indexRange is a slice-index concept. Filtering initiatives by a worktree's
+  // slice band hid every initiative outside it (#97, D7).
+  const filteredEntries = planResult.entries;
+
+  if (filteredEntries.length === 0) {
+    // Nothing is filtered on this path any more, so this means the plan is
+    // genuinely empty. Name the file so the reader can check it (D8).
+    console.log(dim(`No initiatives listed in ${initiativePlanPath}.`));
+    return;
+  }
+
+  // Active arch index — compare against fileArch on the project
+  const activeArchIndex = extractSliceIndex(project.fileArch);
+
+  // Resolve per-entry arch file existence and derived status. Arch entries have
+  // no task file, so taskInferredStatus is always absent here — only
+  // frontmatterStatus (from the arch file, if found) and isChecked feed the
+  // lattice. Per TD-2a: frontmatterStatus is the only non-checkbox signal
+  // available, so a resolution failure on it (unrecognized status value) must
+  // not silently fall through to the checkbox — it renders as degraded instead.
+  const entries = await Promise.all(
+    filteredEntries.map(async (entry) => {
+      let archFile: string | null = null;
+      let status: DisplayStatus = deriveEntryStatus({ planLineStatus: entry.status, isChecked: entry.isChecked });
+      try {
+        const archDir = join(operationPath, 'project-documents/user/architecture');
+        const files = await readdir(archDir);
+        const pattern = new RegExp(`^${entry.index}-arch\\.`, 'i');
+        const found = files.find((f) => pattern.test(f));
+        if (found) {
+          archFile = found;
+          const fm = await introspector.parseFrontmatter(join(archDir, found));
+          if (fm.found) {
+            const normalized = normalizeStatus(fm.data.status);
+            status = normalized === undefined
+              ? 'degraded'
+              : deriveEntryStatus({ frontmatterStatus: normalized, planLineStatus: entry.status, isChecked: entry.isChecked });
+          } else {
+            status = deriveEntryStatus({ planLineStatus: entry.status, isChecked: entry.isChecked });
+          }
+        }
+      } catch {
+        // directory missing or unreadable — leave archFile null, status as checkbox default
+      }
+
+      const isActive = activeArchIndex !== null && entry.index === activeArchIndex;
+
+      return {
+        index: entry.index,
+        name: entry.name,
+        status,
+        archFile,
+        isActive,
+        isChecked: entry.isChecked,
+      };
+    }),
+  );
+
+  if (opts.json) {
+    printJson(entries);
+    return;
+  }
+
+  const planName = initiativePlanPath.split('/').pop() ?? initiativePlanPath;
+  console.log(label(`\nArchitecture Initiatives: ${planName}`));
+
+  const rows = entries.map((e) => {
+    const statusLabel = renderEntryStatus(e.status, e.isChecked);
+    const file = e.archFile ? dim(e.archFile) : dim('—');
+    const indicator = e.isActive ? success('← active') : '';
+    return [String(e.index), e.name, statusLabel, file, indicator];
+  });
+
+  console.log(renderTable(['#', 'Initiative', 'Status', 'Arch File', ''], rows));
+}
+
+/** Fallback: list initiatives from buildModel filesystem scan. */
+async function archListFromModel(
+  opts: { json?: boolean; all?: boolean },
+  project: ReturnType<typeof resolveProject> extends Promise<infer T> ? NonNullable<T> : never,
+  rawProject: Awaited<ReturnType<InstanceType<typeof FileProjectStore>['getById']>>,
+  operationPath: string,
+): Promise<void> {
+  let model;
+
+  if (opts.all && rawProject?.worktrees?.length) {
     const paths = resolveAllOperationPaths(rawProject);
     const models = (await Promise.all(
       paths.map((p) => buildModel(p).catch(() => null)),
     )).filter((m): m is NonNullable<typeof m> => m !== null);
     model = mergeProjectModels(models);
-    // No index filtering in --all mode
   } else {
-    const operationPath = resolveOperationPath(project, worktreeId) ?? project.projectPath;
-    indexRange = getWorktreeIndexRange(rawProject, worktreeId);
-    model = await buildModel(operationPath!);
+    model = await buildModel(operationPath);
   }
 
+  // No range filter — see archListFromPlan (#97, D7).
   const initiativeKeys = Object.keys(model.initiatives)
-    .filter((key) => isInIndexRange(parseInt(key, 10), indexRange))
     .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
 
   if (initiativeKeys.length === 0) {
-    console.log(dim('No initiatives found in project.'));
+    // Genuinely empty, not filtered out (D8).
+    console.log(dim(`No initiatives found under ${operationPath}.`));
     return;
   }
 
@@ -58,27 +180,21 @@ export async function archListAction(opts: { json?: boolean; all?: boolean; proj
 
   const entries = initiativeKeys.map((key) => {
     const init = model.initiatives[key];
-    const baseIndex = parseInt(key, 10);
 
     const archName = init.arch?.name ?? '—';
     const planName = init.slicePlan?.name ?? '—';
 
-    const completedSlices = init.slices.filter(
-      (s) => s.status === 'complete',
-    ).length;
+    const completedSlices = init.slices.filter((s) => s.status === 'complete').length;
     const totalSlices = init.slices.length;
-    const progress = totalSlices > 0
-      ? `${completedSlices}/${totalSlices}`
-      : '—';
+    const progress = totalSlices > 0 ? `${completedSlices}/${totalSlices}` : '—';
 
-    // Determine if this initiative contains the active slice
     const isActive = activeIndex !== null && init.slices.some(
       (s) => parseInt(s.index, 10) === activeIndex,
     );
 
     return {
       index: key,
-      baseIndex,
+      baseIndex: parseInt(key, 10),
       name: init.name,
       archDoc: archName,
       slicePlan: planName,
@@ -97,18 +213,19 @@ export async function archListAction(opts: { json?: boolean; all?: boolean; proj
   console.log(label('\nArchitecture Initiatives'));
 
   const rows = entries.map((e) => {
-    const indicator = e.isActive ? success(' ← active') : '';
+    const indicator = e.isActive ? success('← active') : '';
     return [
       e.index,
       e.name,
       dim(e.archDoc),
       dim(e.slicePlan),
-      e.progress + indicator,
+      e.progress,
+      indicator,
     ];
   });
 
   console.log(renderTable(
-    ['Index', 'Initiative', 'Arch Doc', 'Slice Plan', 'Progress'],
+    ['Index', 'Initiative', 'Arch Doc', 'Slice Plan', 'Progress', ''],
     rows,
   ));
 }

@@ -2,56 +2,26 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
-  type GuideInfo,
+  type DetectedGuideInfo,
   type GuideMethod,
+  type SubmoduleCheckoutState,
   DEFAULT_SOURCE_GIT,
   GUIDE_RELATIVE_PATH,
+  LOCAL_VERSION_MARKER,
   VERSION_MARKER_FILE,
 } from './types.js';
 import { gitExec } from './gitExec.js';
-
-/**
- * Parse the highest semver tag from `git ls-remote --tags` output.
- * Returns null if no valid tags found.
- */
-function parseHighestTag(lsRemoteOutput: string): string | null {
-  const tagPattern = /refs\/tags\/(v?\d+\.\d+\.\d+)$/;
-  const tags: string[] = [];
-
-  for (const line of lsRemoteOutput.split('\n')) {
-    const match = tagPattern.exec(line.trim());
-    if (match) {
-      tags.push(match[1]);
-    }
-  }
-
-  if (tags.length === 0) return null;
-
-  // Sort by semver descending
-  tags.sort((a, b) => {
-    const pa = a.replace(/^v/, '').split('.').map(Number);
-    const pb = b.replace(/^v/, '').split('.').map(Number);
-    for (let i = 0; i < 3; i++) {
-      if (pa[i] !== pb[i]) return pb[i] - pa[i];
-    }
-    return 0;
-  });
-
-  return tags[0];
-}
+import { listRemoteTags } from './tarballSource.js';
+import { compareSemverTagsNewestFirst } from './versionTags.js';
 
 /**
  * Compare two semver version strings. Returns true if latest > current.
  */
 export function isNewerVersion(current: string | null, latest: string | null): boolean {
   if (!current || !latest) return false;
-  const ca = current.replace(/^v/, '').split('.').map(Number);
-  const la = latest.replace(/^v/, '').split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if (la[i] > ca[i]) return true;
-    if (la[i] < ca[i]) return false;
-  }
-  return false;
+  // A local archive is not a release; any remote tag supersedes it.
+  if (current === LOCAL_VERSION_MARKER) return true;
+  return compareSemverTagsNewestFirst(latest, current) < 0;
 }
 
 export class GuideDetector {
@@ -61,14 +31,36 @@ export class GuideDetector {
    * @param source - override source URL (defaults to DEFAULT_SOURCE_GIT)
    * @param operationPath - worktree path for filesystem checks (defaults to projectPath)
    */
-  async detect(projectPath: string, source?: string, operationPath?: string): Promise<GuideInfo> {
+  async detect(projectPath: string, source?: string, operationPath?: string): Promise<DetectedGuideInfo> {
+    const info = await this.detectLocal(projectPath, source, operationPath);
+    const latestVersion = await this.fetchLatestVersion(info.source);
+    return {
+      ...info,
+      latestVersion,
+      updateAvailable: isNewerVersion(info.version, latestVersion),
+    };
+  }
+
+  /**
+   * Everything detect() reports except the remote's latest version, answered
+   * from the filesystem and local git alone — no `git ls-remote`. Read
+   * commands (`cf build`, `context_build`, ...) reach this through
+   * GuideManager.ensureCheckout() so a routine build never waits on the
+   * network (D10); status commands keep using detect().
+   */
+  async detectLocal(
+    projectPath: string,
+    source?: string,
+    operationPath?: string
+  ): Promise<DetectedGuideInfo> {
     const resolvedSource = source || DEFAULT_SOURCE_GIT;
     const effectivePath = operationPath || projectPath;
     const guidePath = join(effectivePath, GUIDE_RELATIVE_PATH);
 
-    const baseInfo: GuideInfo = {
+    const baseInfo: DetectedGuideInfo = {
       installed: false,
       method: null,
+      checkout: null,
       version: null,
       path: guidePath,
       source: resolvedSource,
@@ -78,27 +70,49 @@ export class GuideDetector {
     };
 
     if (!existsSync(guidePath)) {
-      // Check latest version even when not installed
-      baseInfo.latestVersion = await this.fetchLatestVersion(resolvedSource);
       return baseInfo;
     }
 
     // Guide directory exists — determine method (use projectPath for .gitmodules check)
     const method = this.detectMethod(projectPath, guidePath);
+    const checkout = await this.resolveCheckout(method, effectivePath);
     const version = await this.detectVersion(guidePath, method);
-    const latestVersion = await this.fetchLatestVersion(resolvedSource);
-    const updateAvailable = isNewerVersion(version, latestVersion);
 
     return {
       installed: true,
       method,
+      checkout,
       version,
       path: guidePath,
       source: resolvedSource,
-      latestVersion,
-      updateAvailable,
+      latestVersion: null,
+      updateAvailable: false,
       usingBundledPrompt: false,
     };
+  }
+
+  /**
+   * Checkout state for a submodule install, or null for other methods.
+   *
+   * Read-only: this reports what `git submodule status` says and never runs
+   * `git submodule update` (D1). An 'error' result means git is unavailable or
+   * the path is not a repository — surfaced rather than swallowed (D7),
+   * because silently reporting "in sync" would hide the very condition the
+   * caller needs to act on.
+   */
+  private async resolveCheckout(
+    method: GuideMethod,
+    effectivePath: string
+  ): Promise<SubmoduleCheckoutState | null> {
+    if (method !== 'submodule') return null;
+    const state = await this.checkSyncStatus(effectivePath);
+    if (state === 'error') {
+      throw new Error(
+        `Unable to read guide submodule status in ${effectivePath}. ` +
+          'Ensure git is installed and the directory is a git repository.'
+      );
+    }
+    return state;
   }
 
   /** Determine installation method by inspecting filesystem */
@@ -122,7 +136,7 @@ export class GuideDetector {
       return 'clone';
     }
 
-    return 'manual';
+    return 'tarball';
   }
 
   /** Detect current version based on method */
@@ -146,7 +160,7 @@ export class GuideDetector {
   }
 
   /** Check whether a worktree's submodule checkout is in sync with the committed pointer */
-  async checkSyncStatus(worktreePath: string): Promise<'in_sync' | 'out_of_sync' | 'not_initialized' | 'error'> {
+  async checkSyncStatus(worktreePath: string): Promise<SubmoduleCheckoutState | 'error'> {
     try {
       const { stdout } = await gitExec(
         ['submodule', 'status', GUIDE_RELATIVE_PATH],
@@ -164,11 +178,7 @@ export class GuideDetector {
   /** Fetch latest version from remote. Returns null on any failure. */
   private async fetchLatestVersion(source: string): Promise<string | null> {
     try {
-      const { stdout } = await gitExec(
-        ['ls-remote', '--tags', '--sort=-v:refname', source],
-        process.cwd()
-      );
-      return parseHighestTag(stdout);
+      return (await listRemoteTags(source))[0] ?? null;
     } catch {
       return null;
     }

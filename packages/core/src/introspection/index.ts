@@ -4,3 +4,23 @@ export type { IArtifactIntrospector } from './interfaces.js';
 
 // normalizeStatus is a pure function with no fs dependency — browser-safe
 export { normalizeStatus } from './parsers/statusNormalizer.js';
+
+// deriveEntryStatus is a pure function with no fs dependency — browser-safe
+export { deriveEntryStatus } from './statusDerivation.js';
+export type { EntryStatusSignals } from './statusDerivation.js';
+
+// mergeCheckResults / mergeFixResults / attributeFindings / buildAttributedViews / runAttributed are pure — browser-safe
+export {
+  mergeCheckResults,
+  mergeFixResults,
+  attributeFindings,
+  buildAttributedViews,
+  runAttributed,
+  type AttributedView,
+} from './mergeCheckResults.js';
+
+// resolveFixOwner is pure (no fs, no git) — browser-safe
+export { resolveFixOwner } from './fixOwnership.js';
+
+// Type-only: reviewGate.ts reads files, so its runtime values stay out of the browser-safe barrel
+export type { ExemptReason } from './reviewGate.js';

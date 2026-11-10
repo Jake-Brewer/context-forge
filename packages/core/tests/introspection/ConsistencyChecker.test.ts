@@ -1,13 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ConsistencyChecker } from '../../src/introspection/ConsistencyChecker.js';
 import type { IArtifactIntrospector } from '../../src/introspection/interfaces.js';
 import type { ProjectData } from '../../src/types/project.js';
 import type {
   SlicePlanResult,
+  SlicePlanEntry,
   TaskFileResult,
   FrontmatterResult,
   DocumentDetectionResult,
+  NormalizedStatus,
 } from '../../src/introspection/types.js';
+import { makeStubConfig } from '../helpers/stubConfig.js';
+import { STATUS } from '../../src/introspection/types.js';
+import { validateFrontmatter } from '../../src/schema/frontmatterSchema.js';
+import { updateFrontmatterField } from '../../src/introspection/writers/markdownWriter.js';
 
 // Mock GitWorktreeDiscovery for stale-worktree-path rule tests
 const mockListGitWorktrees = vi.fn().mockResolvedValue([]);
@@ -17,11 +23,15 @@ vi.mock('../../src/git/index.js', () => ({
   })),
 }));
 
-// Mock existsSync for stale-worktree-path rule tests
+// Mock existsSync for stale-worktree-path rule tests (other fs exports pass through unmocked)
 const mockExistsSync = vi.fn().mockReturnValue(true);
-vi.mock('node:fs', () => ({
-  existsSync: (...args: unknown[]) => mockExistsSync(...args),
-}));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync: (...args: unknown[]) => mockExistsSync(...args),
+  };
+});
 
 // Mock readdir for multi-plan discovery tests
 const mockReaddir = vi.fn().mockRejectedValue(new Error('ENOENT'));
@@ -69,7 +79,7 @@ function makeMockIntrospector(overrides: Partial<IArtifactIntrospector> = {}): I
     parseSlicePlan: vi.fn<(path: string) => Promise<SlicePlanResult>>().mockResolvedValue({
       filePath: '/fake/plan.md',
       entries: [
-        { index: 165, name: 'test-feature', status: 'in-progress', isChecked: false, lineIndex: 0 },
+        { index: 165, name: 'test-feature', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
       ],
       totalSlices: 1,
       completedSlices: 0,
@@ -110,6 +120,19 @@ describe('ConsistencyChecker', () => {
       const result = await checker.check(makeProject({ projectPath: undefined }));
       expect(result.totalFindings).toBe(0);
       expect(result.summary).toBe('No inconsistencies found');
+    });
+
+    it('accepts an optional ConfigManager with no behavior change (gating stays off in this fixture)', async () => {
+      const withoutConfig = new ConsistencyChecker(makeMockIntrospector());
+      const withConfig = new ConsistencyChecker(
+        makeMockIntrospector(),
+        makeStubConfig({ 'workflow.review_enabled': false }),
+      );
+
+      const resultWithout = await withoutConfig.check(makeProject());
+      const resultWith = await withConfig.check(makeProject());
+
+      expect(resultWith.findings).toEqual(resultWithout.findings);
     });
 
     it('returns empty result when fileSlice has no numeric index', async () => {
@@ -155,7 +178,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0 },
+            { index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 1,
@@ -165,7 +188,7 @@ describe('ConsistencyChecker', () => {
           items: [{ name: 'Task 1', done: true }, { name: 'Task 2', done: false }],
           totalTasks: 2,
           completedTasks: 1,
-          inferredStatus: 'in-progress',
+          inferredStatus: 'in_progress',
         }),
       });
       const checker = new ConsistencyChecker(mock);
@@ -187,7 +210,7 @@ describe('ConsistencyChecker', () => {
           items: [{ name: 'Task 1', done: false }],
           totalTasks: 1,
           completedTasks: 0,
-          inferredStatus: 'not-started',
+          inferredStatus: 'not_started',
         }),
       });
       const checker = new ConsistencyChecker(mock);
@@ -195,6 +218,73 @@ describe('ConsistencyChecker', () => {
 
       const finding = result.findings.find((f) => f.rule === 'task-vs-plan');
       expect(finding).toBeUndefined();
+    });
+
+    it('Rule 1 (slice 911): warns, not-fixable, when tasks in-progress but slice unchecked', async () => {
+      const mock = makeMockIntrospector({
+        parseSlicePlan: vi.fn().mockResolvedValue({
+          filePath: '/fake/plan.md',
+          entries: [
+            { index: 165, name: 'test-feature', status: 'not_started', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+          ],
+          totalSlices: 1,
+          completedSlices: 0,
+        }),
+        parseTaskFile: vi.fn().mockResolvedValue({
+          filePath: '/fake/tasks.md',
+          items: [{ name: 'Task 1', done: true }, { name: 'Task 2', done: false }],
+          totalTasks: 2,
+          completedTasks: 1,
+          inferredStatus: 'in_progress',
+        }),
+      });
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.check(makeProject());
+
+      const finding = result.findings.find(
+        (f) => f.rule === 'task-vs-plan' && f.severity === 'warning',
+      );
+      expect(finding).toBeDefined();
+      expect(finding!.description).toContain('in progress');
+      expect(finding!.description).toContain('unchecked');
+      expect(finding!.fixable).toBe(false);
+      expect(finding!.fixAction).toBeUndefined();
+    });
+
+    it('Rule 1 (slice 911): existing complete-unchecked and checked-incomplete branches unaffected by the new in-progress branch', async () => {
+      // Complete-unchecked (pre-existing branch) still fires; the new
+      // in-progress branch must not also fire for a fully-complete task file.
+      const completeUnchecked = new ConsistencyChecker(makeMockIntrospector());
+      const r1 = await completeUnchecked.check(makeProject());
+      const findings1 = r1.findings.filter((f) => f.rule === 'task-vs-plan');
+      expect(findings1).toHaveLength(1);
+      expect(findings1[0].severity).toBe('warning');
+      expect(findings1[0].description).toContain('Tasks complete');
+
+      // Checked-incomplete (pre-existing error branch) still fires alone.
+      const checkedIncomplete = new ConsistencyChecker(
+        makeMockIntrospector({
+          parseSlicePlan: vi.fn().mockResolvedValue({
+            filePath: '/fake/plan.md',
+            entries: [
+              { index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            ],
+            totalSlices: 1,
+            completedSlices: 1,
+          }),
+          parseTaskFile: vi.fn().mockResolvedValue({
+            filePath: '/fake/tasks.md',
+            items: [{ name: 'Task 1', done: true }, { name: 'Task 2', done: false }],
+            totalTasks: 2,
+            completedTasks: 1,
+            inferredStatus: 'in_progress',
+          }),
+        }),
+      );
+      const r2 = await checkedIncomplete.check(makeProject());
+      const findings2 = r2.findings.filter((f) => f.rule === 'task-vs-plan');
+      expect(findings2).toHaveLength(1);
+      expect(findings2[0].severity).toBe('error');
     });
 
     // --- Rule 2: Frontmatter status vs. computed state ---
@@ -211,11 +301,11 @@ describe('ConsistencyChecker', () => {
           items: [{ name: 'Task 1', done: false }],
           totalTasks: 1,
           completedTasks: 0,
-          inferredStatus: 'not-started',
+          inferredStatus: 'not_started',
         }),
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
-          entries: [{ index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0 }],
+          entries: [{ index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false }],
           totalSlices: 1,
           completedSlices: 1,
         }),
@@ -229,7 +319,7 @@ describe('ConsistencyChecker', () => {
       expect(finding).toBeDefined();
       expect(finding!.description).toContain('"complete"');
       expect(finding!.description).toContain('incomplete');
-      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'in-progress' });
+      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'in_progress' });
     });
 
     it('Rule 2: warns when frontmatter "in-progress" but tasks complete', async () => {
@@ -260,6 +350,68 @@ describe('ConsistencyChecker', () => {
       expect(finding).toBeUndefined();
     });
 
+    it('Rule 2 (slice 911): warns and --fix flips frontmatter to in-progress when tasks in-progress but frontmatter not-started', async () => {
+      const mock = makeMockIntrospector({
+        parseFrontmatter: vi.fn().mockResolvedValue({
+          filePath: '/fake/slice.md',
+          found: true,
+          data: { status: 'not-started' },
+        }),
+        parseTaskFile: vi.fn().mockResolvedValue({
+          filePath: '/fake/tasks.md',
+          items: [{ name: 'Task 1', done: true }, { name: 'Task 2', done: false }],
+          totalTasks: 2,
+          completedTasks: 1,
+          inferredStatus: 'in_progress',
+        }),
+      });
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.check(makeProject());
+
+      const finding = result.findings.find(
+        (f) => f.rule === 'frontmatter-vs-computed' && f.severity === 'warning',
+      );
+      expect(finding).toBeDefined();
+      expect(finding!.description).toContain('not_started');
+      expect(finding!.description).toContain('in progress');
+      expect(finding!.fixable).toBe(true);
+      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'in_progress' });
+
+      const fixResult = await checker.applyFixes(await checker.check(makeProject()));
+      const fixLogEntry = fixResult.fixLog.find((e) => e.rule === 'frontmatter-vs-computed');
+      expect(fixLogEntry).toBeDefined();
+    });
+
+    it('Rule 2 (slice 911): existing complete-boundary branches unaffected by the new not-started branch', async () => {
+      // "complete" frontmatter + incomplete tasks (pre-existing error branch)
+      // must not also trigger the new not-started branch.
+      const mock = makeMockIntrospector({
+        parseFrontmatter: vi.fn().mockResolvedValue({
+          filePath: '/fake/slice.md',
+          found: true,
+          data: { status: 'complete' },
+        }),
+        parseTaskFile: vi.fn().mockResolvedValue({
+          filePath: '/fake/tasks.md',
+          items: [{ name: 'Task 1', done: false }],
+          totalTasks: 1,
+          completedTasks: 0,
+          inferredStatus: 'not_started',
+        }),
+        parseSlicePlan: vi.fn().mockResolvedValue({
+          filePath: '/fake/plan.md',
+          entries: [{ index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false }],
+          totalSlices: 1,
+          completedSlices: 1,
+        }),
+      });
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.check(makeProject());
+      const findings = result.findings.filter((f) => f.rule === 'frontmatter-vs-computed');
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('error');
+    });
+
     // --- Rule 3: Missing artifact cross-references ---
 
     it('Rule 3: info when task file exists but no plan entry', async () => {
@@ -267,7 +419,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 999, name: 'other-feature', status: 'not-started', isChecked: false, lineIndex: 0 },
+            { index: 999, name: 'other-feature', status: 'not_started', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 0,
@@ -284,7 +436,7 @@ describe('ConsistencyChecker', () => {
       expect(finding!.fixable).toBe(false);
     });
 
-    it('Rule 3: info when plan entry exists but no task file', async () => {
+    it('Rule 3: info when slice design exists but no task file', async () => {
       const mock = makeMockIntrospector({
         detectDocuments: vi.fn().mockResolvedValue({
           sliceDesign: 'project-documents/user/slices/165-slice.test-feature.md',
@@ -304,6 +456,32 @@ describe('ConsistencyChecker', () => {
       expect(finding!.fixable).toBe(false);
     });
 
+    it('Rule 3: silent when plan entry exists with NO slice design and NO task file (normal pre-design state)', async () => {
+      const mock = makeMockIntrospector({
+        parseSlicePlan: vi.fn().mockResolvedValue({
+          filePath: '/fake/plan.md',
+          entries: [
+            { index: 165, name: 'test-feature', status: 'not_started', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+          ],
+          totalSlices: 1,
+          completedSlices: 0,
+        }),
+        detectDocuments: vi.fn().mockResolvedValue({
+          sliceDesign: null,
+          taskFile: null,
+          architecture: null,
+          slicePlan: null,
+        }),
+      });
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.check(makeProject());
+
+      const finding = result.findings.find(
+        (f) => f.rule === 'missing-artifact' && f.description.includes('no task file'),
+      );
+      expect(finding).toBeUndefined();
+    });
+
     // --- Rule 4: Plan checkbox vs. slice frontmatter status ---
 
     it('Rule 4: warns when plan checked but frontmatter not complete', async () => {
@@ -311,7 +489,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0 },
+            { index: 165, name: 'test-feature', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 1,
@@ -383,7 +561,7 @@ describe('ConsistencyChecker', () => {
           items: [{ name: 'Task 1', done: false }],
           totalTasks: 1,
           completedTasks: 0,
-          inferredStatus: 'not-started',
+          inferredStatus: 'not_started',
         }),
         parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
           if (path.includes('tasks')) {
@@ -435,7 +613,7 @@ describe('ConsistencyChecker', () => {
     it('applies checkbox fix and populates fixLog', async () => {
       // Default mock: tasks complete, plan unchecked → fixable warning
       const checker = new ConsistencyChecker(makeMockIntrospector());
-      const result = await checker.fix(makeProject());
+      const result = await checker.applyFixes(await checker.check(makeProject()));
 
       expect(result.fixed).toBeGreaterThan(0);
       expect(result.fixLog.length).toBeGreaterThan(0);
@@ -446,9 +624,53 @@ describe('ConsistencyChecker', () => {
       expect(checkboxFix!.after).toBe('[x]');
     });
 
+    it('--fix round-trip: written status is canonical and passes validateFrontmatter (#72)', async () => {
+      vi.mocked(updateFrontmatterField).mockClear();
+      // A legacy document: hyphenated status on disk, tasks under way — the
+      // scenario from the issue, which used to write non-canonical 'in-progress'.
+      const mock = makeMockIntrospector({
+        parseTaskFile: vi.fn().mockResolvedValue({
+          filePath: '/fake/tasks.md',
+          items: [
+            { name: 'Task 1', done: true },
+            { name: 'Task 2', done: false },
+          ],
+          totalTasks: 2,
+          completedTasks: 1,
+          inferredStatus: 'in_progress',
+        }),
+        parseFrontmatter: vi.fn().mockResolvedValue({
+          filePath: '/fake/slice.md',
+          found: true,
+          data: { status: 'not-started' }, // lenient read of historical spelling
+        }),
+      });
+      const checker = new ConsistencyChecker(mock);
+      await checker.applyFixes(await checker.check(makeProject()));
+
+      const statusWrites = vi
+        .mocked(updateFrontmatterField)
+        .mock.calls.filter(([, key]) => key === 'status');
+      expect(statusWrites.length).toBeGreaterThan(0);
+      for (const [, , written] of statusWrites) {
+        expect(written).toBe(STATUS.InProgress);
+        // The written value must pass the strict validation gate: the write
+        // side and validate side agree, closing the loop from issue #72.
+        const findings = validateFrontmatter('/fake/slice.md', {
+          docType: 'slice-design',
+          slice: 'test-feature',
+          project: 'test',
+          status: written,
+          dateCreated: '20260101',
+          dateUpdated: '20260301',
+        });
+        expect(findings).toHaveLength(0);
+      }
+    });
+
     it('applies frontmatter fix and populates fixLog', async () => {
       const checker = new ConsistencyChecker(makeMockIntrospector());
-      const result = await checker.fix(makeProject());
+      const result = await checker.applyFixes(await checker.check(makeProject()));
 
       const fmFix = result.fixLog.find((e) => e.action === 'update-frontmatter');
       expect(fmFix).toBeDefined();
@@ -462,7 +684,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 999, name: 'other', status: 'not-started', isChecked: false, lineIndex: 0 },
+            { index: 999, name: 'other', status: 'not_started', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 0,
@@ -472,7 +694,7 @@ describe('ConsistencyChecker', () => {
           items: [{ name: 'Task 1', done: false }],
           totalTasks: 1,
           completedTasks: 0,
-          inferredStatus: 'not-started',
+          inferredStatus: 'not_started',
         }),
         parseFrontmatter: vi.fn().mockResolvedValue({
           filePath: '/fake/slice.md',
@@ -481,7 +703,7 @@ describe('ConsistencyChecker', () => {
         }),
       });
       const checker = new ConsistencyChecker(mock);
-      const result = await checker.fix(makeProject());
+      const result = await checker.applyFixes(await checker.check(makeProject()));
 
       // Only info-level non-fixable findings (missing-artifact)
       const infoFindings = result.findings.filter((f) => !f.fixable);
@@ -497,7 +719,7 @@ describe('ConsistencyChecker', () => {
       vi.mocked(updateCheckbox).mockRejectedValueOnce(new Error('Permission denied'));
 
       const checker = new ConsistencyChecker(makeMockIntrospector());
-      const result = await checker.fix(makeProject());
+      const result = await checker.applyFixes(await checker.check(makeProject()));
 
       // Should have at least one fix error
       expect(result.fixErrors.length).toBeGreaterThan(0);
@@ -509,18 +731,31 @@ describe('ConsistencyChecker', () => {
 
     it('fixed count matches applied fixes', async () => {
       const checker = new ConsistencyChecker(makeMockIntrospector());
-      const result = await checker.fix(makeProject());
+      const result = await checker.applyFixes(await checker.check(makeProject()));
 
       expect(result.fixed).toBe(result.fixLog.length);
     });
 
     it('fixLog entries have rule populated from finding', async () => {
       const checker = new ConsistencyChecker(makeMockIntrospector());
-      const result = await checker.fix(makeProject());
+      const result = await checker.applyFixes(await checker.check(makeProject()));
 
       for (const entry of result.fixLog) {
         expect(entry.rule).not.toBe('');
         expect(typeof entry.rule).toBe('string');
+      }
+    });
+
+    it('applyFixes passes its date stamp through to updateFrontmatterField', async () => {
+      vi.mocked(updateFrontmatterField).mockClear();
+      const checker = new ConsistencyChecker(makeMockIntrospector());
+      const checkResult = await checker.check(makeProject());
+      await checker.applyFixes(checkResult, '20260215');
+
+      const frontmatterCalls = vi.mocked(updateFrontmatterField).mock.calls;
+      expect(frontmatterCalls.length).toBeGreaterThan(0);
+      for (const call of frontmatterCalls) {
+        expect(call[3]).toBe('20260215');
       }
     });
   });
@@ -560,9 +795,9 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'slice-a', status: 'in-progress', isChecked: false, lineIndex: 0 },
-            { index: 171, name: 'slice-b', status: 'in-progress', isChecked: false, lineIndex: 0 },
-            { index: 172, name: 'slice-c', status: 'in-progress', isChecked: false, lineIndex: 0 },
+            { index: 170, name: 'slice-a', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'slice-b', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 172, name: 'slice-c', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 3,
           completedSlices: 0,
@@ -593,9 +828,9 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 168, name: 'slice-foo', status: 'in-progress', isChecked: false, lineIndex: 0 },
-            { index: 168, name: 'slice-bar', status: 'in-progress', isChecked: false, lineIndex: 0 },
-            { index: 169, name: 'slice-baz', status: 'in-progress', isChecked: false, lineIndex: 0 },
+            { index: 168, name: 'slice-foo', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 168, name: 'slice-bar', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 169, name: 'slice-baz', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 3,
           completedSlices: 0,
@@ -626,8 +861,8 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'a', status: 'in-progress', isChecked: true, lineIndex: 0 },
-            { index: 171, name: 'b', status: 'in-progress', isChecked: false, lineIndex: 0 },
+            { index: 170, name: 'a', status: 'in_progress', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'b', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 2,
           completedSlices: 1,
@@ -655,8 +890,8 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0 },
-            { index: 171, name: 'b', status: 'complete', isChecked: true, lineIndex: 0 },
+            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'b', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 2,
           completedSlices: 2,
@@ -677,62 +912,60 @@ describe('ConsistencyChecker', () => {
       expect(finding!.description).toContain('All 2 entries');
     });
 
-    // --- Rule 9: Missing plan status ---
-
-    it('Rule 9: warns when plan frontmatter has no status field, infers in-progress', async () => {
+    it('Rule 7: does not fire when plan "complete" and every entry is checked or [~] deprecated', async () => {
       const mock = makeMockIntrospector({
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'a', status: 'in-progress', isChecked: false, lineIndex: 0 },
+            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'b', status: 'deprecated', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
-          totalSlices: 1,
-          completedSlices: 0,
+          totalSlices: 2,
+          completedSlices: 2,
         }),
         parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
           if (path.includes('plan') || path.includes('slices')) {
-            return { filePath: path, found: true, data: { docType: 'slice-plan' } };
+            return { filePath: path, found: true, data: { status: 'complete' } };
           }
-          return { filePath: path, found: true, data: { status: 'in-progress' } };
+          return { filePath: path, found: true, data: { status: 'complete' } };
         }),
       });
+
       const checker = new ConsistencyChecker(mock);
       const result = await checker.checkAll(makeProject());
 
-      const finding = result.findings.find((f) => f.rule === 'missing-plan-status');
-      expect(finding).toBeDefined();
-      expect(finding!.severity).toBe('warning');
-      expect(finding!.description).toContain('no "status" field');
-      expect(finding!.description).toContain('in-progress');
-      expect(finding!.fixable).toBe(true);
-      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'in-progress' });
+      const finding = result.findings.find((f) => f.rule === 'plan-status-vs-entries');
+      expect(finding).toBeUndefined();
     });
 
-    it('Rule 9: infers complete when all entries are checked', async () => {
+    it('Rule 7: still warns when plan is not complete even though every entry is checked or [~] deprecated', async () => {
       const mock = makeMockIntrospector({
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0 },
+            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'b', status: 'deprecated', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
-          totalSlices: 1,
-          completedSlices: 1,
+          totalSlices: 2,
+          completedSlices: 2,
         }),
         parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
           if (path.includes('plan') || path.includes('slices')) {
-            return { filePath: path, found: true, data: { docType: 'slice-plan' } };
+            return { filePath: path, found: true, data: { status: 'in-progress' } };
           }
-          return { filePath: path, found: true, data: { status: 'in-progress' } };
+          return { filePath: path, found: true, data: { status: 'complete' } };
         }),
       });
+
       const checker = new ConsistencyChecker(mock);
       const result = await checker.checkAll(makeProject());
 
-      const finding = result.findings.find((f) => f.rule === 'missing-plan-status');
+      const finding = result.findings.find((f) => f.rule === 'plan-status-vs-entries');
       expect(finding).toBeDefined();
-      expect(finding!.description).toContain('complete');
-      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'complete' });
+      expect(finding!.description).toContain('All 2 entries');
     });
+
+    // (Rule 9: missing-plan-status — removed, subsumed by Rule 12 frontmatter-schema)
 
     // --- Rule 8: Arch status vs plans ---
 
@@ -741,7 +974,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'a', status: 'in-progress', isChecked: false, lineIndex: 0 },
+            { index: 170, name: 'a', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 0,
@@ -763,6 +996,7 @@ describe('ConsistencyChecker', () => {
       const finding = result.findings.find((f) => f.rule === 'arch-status-vs-plans');
       expect(finding).toBeDefined();
       expect(finding!.severity).toBe('warning');
+      expect(finding!.description).toContain('Architecture (160)');
       expect(finding!.description).toContain('complete');
       expect(finding!.description).toContain('unchecked');
       expect(finding!.fixable).toBe(true);
@@ -773,7 +1007,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0 },
+            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 1,
@@ -795,6 +1029,67 @@ describe('ConsistencyChecker', () => {
       const finding = result.findings.find((f) => f.rule === 'arch-status-vs-plans');
       expect(finding).toBeDefined();
       expect(finding!.description).toContain('All 1 plan entries');
+      expect(finding!.description).toContain('Architecture (160)');
+    });
+
+    it('Rule 8: does not fire when arch "complete" and every plan entry is checked or [~] deprecated', async () => {
+      const mock = makeMockIntrospector({
+        parseSlicePlan: vi.fn().mockResolvedValue({
+          filePath: '/fake/plan.md',
+          entries: [
+            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'b', status: 'deprecated', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+          ],
+          totalSlices: 2,
+          completedSlices: 2,
+        }),
+        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
+          if (path.includes('arch')) {
+            return { filePath: path, found: true, data: { status: 'complete' } };
+          }
+          if (path.includes('plan') || path.includes('slices')) {
+            return { filePath: path, found: true, data: { status: 'complete' } };
+          }
+          return { filePath: path, found: true, data: { status: 'complete' } };
+        }),
+      });
+
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.checkAll(makeProject({ fileArch: '160-arch.test-system' }));
+
+      const finding = result.findings.find((f) => f.rule === 'arch-status-vs-plans');
+      expect(finding).toBeUndefined();
+    });
+
+    it('Rule 8: still warns when arch is not complete even though every plan entry is checked or [~] deprecated', async () => {
+      const mock = makeMockIntrospector({
+        parseSlicePlan: vi.fn().mockResolvedValue({
+          filePath: '/fake/plan.md',
+          entries: [
+            { index: 170, name: 'a', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+            { index: 171, name: 'b', status: 'deprecated', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+          ],
+          totalSlices: 2,
+          completedSlices: 2,
+        }),
+        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
+          if (path.includes('arch')) {
+            return { filePath: path, found: true, data: { status: 'in-progress' } };
+          }
+          if (path.includes('plan') || path.includes('slices')) {
+            return { filePath: path, found: true, data: { status: 'complete' } };
+          }
+          return { filePath: path, found: true, data: { status: 'complete' } };
+        }),
+      });
+
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.checkAll(makeProject({ fileArch: '160-arch.test-system' }));
+
+      const finding = result.findings.find((f) => f.rule === 'arch-status-vs-plans');
+      expect(finding).toBeDefined();
+      expect(finding!.description).toContain('All 2 plan entries');
+      expect(finding!.description).toContain('Architecture (160)');
     });
 
     // --- Multi-plan scanning ---
@@ -812,7 +1107,7 @@ describe('ConsistencyChecker', () => {
             return {
               filePath: path,
               entries: [
-                { index: 165, name: 'slice-a', status: 'in-progress', isChecked: false, lineIndex: 0 },
+                { index: 165, name: 'slice-a', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
               ],
               totalSlices: 1,
               completedSlices: 0,
@@ -822,7 +1117,7 @@ describe('ConsistencyChecker', () => {
             return {
               filePath: path,
               entries: [
-                { index: 185, name: 'slice-b', status: 'in-progress', isChecked: false, lineIndex: 0 },
+                { index: 185, name: 'slice-b', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
               ],
               totalSlices: 1,
               completedSlices: 0,
@@ -861,11 +1156,11 @@ describe('ConsistencyChecker', () => {
           return {
             filePath: path,
             entries: [
-              { index: 165, name: 'shared-slice', status: 'in-progress', isChecked: false, lineIndex: 0 },
+              { index: 165, name: 'shared-slice', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
               ...(path.includes('180-slices') ? [
-                { index: 186, name: 'unique-slice', status: 'in-progress', isChecked: false, lineIndex: 1 },
+                { index: 186, name: 'unique-slice', status: 'in_progress', isChecked: false, lineIndex: 1, indexSource: 'explicit', retroactive: false },
               ] : []),
-            ],
+            ] as SlicePlanEntry[],
             totalSlices: path.includes('180-slices') ? 2 : 1,
             completedSlices: 0,
           };
@@ -915,7 +1210,7 @@ describe('ConsistencyChecker', () => {
             return {
               filePath: path,
               entries: [
-                { index: 185, name: 'other-slice', status: 'in-progress', isChecked: false, lineIndex: 0 },
+                { index: 185, name: 'other-slice', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
               ],
               totalSlices: 1,
               completedSlices: 0,
@@ -963,107 +1258,130 @@ describe('ConsistencyChecker', () => {
       );
       expect(otherPrefixed.length).toBe(0);
     });
-  });
 
-    // --- Rule 11: missing-arch-status ---
+    it('excludes a legacy unindexed plan\'s synthetic indices from cross-plan aggregation (140-style collision)', async () => {
+      // Entry shapes below are exactly what parseSlicePlan() produces for the
+      // two fixtures in tests/fixtures/introspection/collision/ (verified via
+      // slicePlanParser.test.ts's real-parser collision test): a real
+      // indexed-format plan with indices 1-3, and an unindexed-format plan
+      // mirroring 140-slices.context-forge-restructure.md's exact list format
+      // (no bolded index), whose sequential fallback indices also land on 1-3.
+      mockReaddir.mockResolvedValueOnce(['140-slices.legacy-plan.md', '900-slices.real-plan.md']);
 
-    it('Rule 11: warns when arch file has no status field, infers not_started when no plan', async () => {
       const mock = makeMockIntrospector({
-        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
-          if (path.includes('arch')) {
-            return { filePath: path, found: true, data: {} as Record<string, string> };
+        parseSlicePlan: vi.fn<(path: string) => Promise<SlicePlanResult>>().mockImplementation(async (path: string) => {
+          if (path.includes('140-slices.legacy-plan')) {
+            return {
+              filePath: path,
+              entries: [
+                { index: 1, name: 'Monorepo Scaffolding', status: 'complete', isChecked: true, lineIndex: 14, indexSource: 'fallback', retroactive: false },
+                { index: 2, name: 'Core Types Extraction', status: 'complete', isChecked: true, lineIndex: 16, indexSource: 'fallback', retroactive: false },
+                { index: 3, name: 'Core Services Extraction', status: 'complete', isChecked: true, lineIndex: 18, indexSource: 'fallback', retroactive: false },
+              ],
+              totalSlices: 3,
+              completedSlices: 3,
+            };
           }
-          return { filePath: path, found: true, data: { status: 'in-progress' } };
+          if (path.includes('900-slices.real-plan')) {
+            return {
+              filePath: path,
+              entries: [
+                { index: 1, name: 'Real Slice One', status: 'complete', isChecked: true, lineIndex: 12, indexSource: 'explicit', retroactive: false },
+                { index: 2, name: 'Real Slice Two', status: 'not_started', isChecked: false, lineIndex: 14, indexSource: 'explicit', retroactive: false },
+                { index: 3, name: 'Real Slice Three', status: 'not_started', isChecked: false, lineIndex: 16, indexSource: 'explicit', retroactive: false },
+              ],
+              totalSlices: 3,
+              completedSlices: 1,
+            };
+          }
+          throw new Error('unexpected plan path');
+        }),
+        parseFrontmatter: vi.fn().mockResolvedValue({
+          filePath: '/fake/slice.md',
+          found: true,
+          data: { status: 'in-progress' },
         }),
       });
 
       const checker = new ConsistencyChecker(mock);
-      // fileArch without a matching plan index so no pair is formed
-      const result = await checker.checkAll(makeProject({ fileArch: '999-arch.orphan' }));
+      const result = await checker.checkAll(makeProject({ fileSlicePlan: undefined }));
 
-      const finding = result.findings.find((f) => f.rule === 'missing-arch-status');
+      // The legacy plan's unindexed entries must never enter the cross-plan
+      // index space — the [N]-prefixed per-slice findings (from checkSlice(),
+      // driven by uniqueEntries) for indices 1-3 must come from the REAL plan
+      // only, proving first-occurrence-wins now skips fallback-indexed entries
+      // rather than the legacy plan's synthetic indices winning the collision.
+      const crossPlanFindings = result.findings.filter((f) => /^\[[123]\]/.test(f.description));
+      expect(crossPlanFindings.length).toBeGreaterThan(0);
+      for (const finding of crossPlanFindings) {
+        expect(finding.location).not.toContain('legacy-plan');
+      }
+
+      // Per-plan aggregate rules (e.g. plan-status-vs-entries) still legitimately
+      // evaluate the legacy plan's own internal consistency — that's unrelated
+      // to the cross-plan collision and stays in scope per the design's
+      // boundary (single-plan consumers are unaffected by this fix).
+      const legacyCrossPlanFindings = crossPlanFindings.filter((f) => f.location.includes('legacy-plan'));
+      expect(legacyCrossPlanFindings).toHaveLength(0);
+    });
+
+    // --- Rule 15: personal-config-in-shared-file ---
+
+    it('Rule 15: flags a personal key found in the shared config file', async () => {
+      const mock = makeMockIntrospector({
+        parseSlicePlan: vi.fn().mockRejectedValue(new Error('not found')),
+      });
+      const config = makeStubConfig(
+        { 'workflow.review_enabled': false },
+        { 'git.integration_branch': { shared: 'legacy/value' } }
+      );
+      const checker = new ConsistencyChecker(mock, config);
+      const result = await checker.checkAll(makeProject());
+
+      const finding = result.findings.find((f) => f.rule === 'personal-config-in-shared-file');
       expect(finding).toBeDefined();
       expect(finding!.severity).toBe('warning');
-      expect(finding!.description).toContain('not_started');
-      expect(finding!.fixable).toBe(true);
-      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'not_started' });
+      expect(finding!.fixable).toBe(false);
+      expect(finding!.description).toContain('git.integration_branch');
     });
 
-    it('Rule 11: infers in-progress when paired plan has unchecked entries', async () => {
+    it('Rule 15: no finding when no personal key is present in the shared file', async () => {
       const mock = makeMockIntrospector({
-        parseSlicePlan: vi.fn().mockResolvedValue({
-          filePath: '/fake/plan.md',
-          entries: [
-            { index: 160, name: 'a', status: 'in-progress', isChecked: false, lineIndex: 0 },
-          ],
-          totalSlices: 1,
-          completedSlices: 0,
-        }),
-        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
-          if (path.includes('arch')) {
-            return { filePath: path, found: true, data: {} as Record<string, string> };
-          }
-          return { filePath: path, found: true, data: { status: 'in-progress' } };
-        }),
+        parseSlicePlan: vi.fn().mockRejectedValue(new Error('not found')),
       });
+      const config = makeStubConfig({ 'workflow.review_enabled': false }, {});
+      const checker = new ConsistencyChecker(mock, config);
+      const result = await checker.checkAll(makeProject());
 
-      const checker = new ConsistencyChecker(mock);
-      const result = await checker.checkAll(makeProject({ fileArch: '160-arch.test-system' }));
-
-      const finding = result.findings.find((f) => f.rule === 'missing-arch-status');
-      expect(finding).toBeDefined();
-      expect(finding!.description).toContain('in-progress');
-      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'in-progress' });
-    });
-
-    it('Rule 11: infers complete when paired plan is fully checked', async () => {
-      const mock = makeMockIntrospector({
-        parseSlicePlan: vi.fn().mockResolvedValue({
-          filePath: '/fake/plan.md',
-          entries: [
-            { index: 160, name: 'a', status: 'complete', isChecked: true, lineIndex: 0 },
-          ],
-          totalSlices: 1,
-          completedSlices: 1,
-        }),
-        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
-          if (path.includes('arch')) {
-            return { filePath: path, found: true, data: {} as Record<string, string> };
-          }
-          return { filePath: path, found: true, data: { status: 'complete' } };
-        }),
-      });
-
-      const checker = new ConsistencyChecker(mock);
-      const result = await checker.checkAll(makeProject({ fileArch: '160-arch.test-system' }));
-
-      const finding = result.findings.find((f) => f.rule === 'missing-arch-status');
-      expect(finding).toBeDefined();
-      expect(finding!.description).toContain('complete');
-      expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'complete' });
-    });
-
-    it('Rule 11: no finding when arch status already present', async () => {
-      const mock = makeMockIntrospector({
-        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
-          return { filePath: path, found: true, data: { status: 'in-progress' } };
-        }),
-      });
-
-      const checker = new ConsistencyChecker(mock);
-      const result = await checker.checkAll(makeProject({ fileArch: '160-arch.test-system' }));
-
-      const finding = result.findings.find((f) => f.rule === 'missing-arch-status');
+      const finding = result.findings.find((f) => f.rule === 'personal-config-in-shared-file');
       expect(finding).toBeUndefined();
     });
 
-  describe('fixAll()', () => {
+    it('Rule 15: still fires when the personal file also has a (possibly different) value — detection is shared-file presence only', async () => {
+      const mock = makeMockIntrospector({
+        parseSlicePlan: vi.fn().mockRejectedValue(new Error('not found')),
+      });
+      const config = makeStubConfig(
+        { 'workflow.review_enabled': false },
+        { 'git.integration_branch': { shared: 'legacy/value', personal: 'dev/erik' } }
+      );
+      const checker = new ConsistencyChecker(mock, config);
+      const result = await checker.checkAll(makeProject());
+
+      const finding = result.findings.find((f) => f.rule === 'personal-config-in-shared-file');
+      expect(finding).toBeDefined();
+    });
+  });
+
+    // (Rule 11: missing-arch-status — removed, subsumed by Rule 12 frontmatter-schema)
+
+  describe('applyFixes() over checkAll()', () => {
     it('applies fixes across multiple slices and returns log', async () => {
       const checker = new ConsistencyChecker(makeMockIntrospector({
         parseSlicePlan: vi.fn().mockResolvedValue({
           filePath: '/fake/plan.md',
           entries: [
-            { index: 165, name: 'test-feature', status: 'in-progress', isChecked: false, lineIndex: 0 },
+            { index: 165, name: 'test-feature', status: 'in_progress', isChecked: false, lineIndex: 0, indexSource: 'explicit', retroactive: false },
           ],
           totalSlices: 1,
           completedSlices: 0,
@@ -1075,7 +1393,7 @@ describe('ConsistencyChecker', () => {
         }),
       }));
 
-      const result = await checker.fixAll(makeProject());
+      const result = await checker.applyFixes(await checker.checkAll(makeProject()));
 
       expect(result.fixed).toBeGreaterThan(0);
       expect(result.fixLog.length).toBe(result.fixed);
@@ -1091,7 +1409,7 @@ describe('ConsistencyChecker', () => {
         parseSlicePlan: vi.fn().mockRejectedValue(new Error('not found')),
       });
       const checker = new ConsistencyChecker(mock);
-      const result = await checker.fixAll(makeProject());
+      const result = await checker.applyFixes(await checker.checkAll(makeProject()));
 
       expect(result.fixed).toBe(0);
       expect(result.fixLog).toHaveLength(0);
@@ -1195,6 +1513,385 @@ describe('ConsistencyChecker', () => {
 
       const staleFindings = result.findings.filter((f) => f.rule === 'stale-worktree-path');
       expect(staleFindings).toHaveLength(0);
+    });
+
+    // --- Rule 12: frontmatter-schema ---
+
+    it('Rule 12: detects missing status on a tasks file', async () => {
+      // Set up readdir to return files for document discovery
+      mockReaddir.mockImplementation(async (dir: string) => {
+        if (dir.endsWith('/architecture')) return ['160-slices.test-system.md'];
+        if (dir.endsWith('/tasks')) return ['165-tasks.test-feature.md'];
+        throw new Error('ENOENT');
+      });
+
+      const mock = makeMockIntrospector({
+        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
+          if (path.includes('165-tasks')) {
+            return {
+              filePath: path,
+              found: true,
+              data: { docType: 'tasks', slice: 'test', project: 'test', dateCreated: '20260101', dateUpdated: '20260301' },
+            };
+          }
+          // Default for slice plans and arch files
+          return { filePath: path, found: true, data: { status: 'in-progress' } };
+        }),
+      });
+
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.checkAll(makeProject());
+
+      const schemaFindings = result.findings.filter((f) => f.rule === 'frontmatter-schema');
+      expect(schemaFindings.length).toBeGreaterThanOrEqual(1);
+      const statusFinding = schemaFindings.find((f) => f.description.includes("'status'"));
+      expect(statusFinding).toBeDefined();
+      expect(statusFinding!.fixable).toBe(true);
+      expect(statusFinding!.fixAction?.type).toBe('update-frontmatter');
+
+      mockReaddir.mockRejectedValue(new Error('ENOENT'));
+    });
+
+    it('Rule 12: no findings for valid document', async () => {
+      mockReaddir.mockImplementation(async (dir: string) => {
+        if (dir.endsWith('/architecture')) return ['160-slices.test-system.md'];
+        if (dir.endsWith('/slices')) return ['165-slice.test-feature.md'];
+        throw new Error('ENOENT');
+      });
+
+      const validFmDefault = {
+        filePath: '/fake/plan.md', found: true,
+        data: { docType: 'slice-plan', project: 'test', status: 'in_progress', dateCreated: '20260101', dateUpdated: '20260301' },
+      };
+      const mock = makeMockIntrospector({
+        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
+          if (path.includes('165-slice.test-feature')) {
+            return {
+              filePath: path,
+              found: true,
+              data: {
+                docType: 'slice-design', slice: 'test-feature', project: 'test',
+                status: 'in_progress', dateCreated: '20260101', dateUpdated: '20260301',
+              },
+            };
+          }
+          return { ...validFmDefault, filePath: path };
+        }),
+      });
+
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.checkAll(makeProject());
+
+      const schemaFindings = result.findings.filter((f) => f.rule === 'frontmatter-schema');
+      expect(schemaFindings).toHaveLength(0);
+
+      mockReaddir.mockRejectedValue(new Error('ENOENT'));
+    });
+
+    it('Rule 12: skips files without frontmatter', async () => {
+      mockReaddir.mockImplementation(async (dir: string) => {
+        if (dir.endsWith('/architecture')) return ['160-slices.test-system.md'];
+        if (dir.endsWith('/slices')) return ['readme.md'];
+        throw new Error('ENOENT');
+      });
+
+      const validFmDefault = {
+        filePath: '/fake/plan.md', found: true,
+        data: { docType: 'slice-plan', project: 'test', status: 'in_progress', dateCreated: '20260101', dateUpdated: '20260301' },
+      };
+      const mock = makeMockIntrospector({
+        parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(async (path: string) => {
+          if (path.includes('readme.md')) {
+            return { filePath: path, found: false, data: {} };
+          }
+          return { ...validFmDefault, filePath: path };
+        }),
+      });
+
+      const checker = new ConsistencyChecker(mock);
+      const result = await checker.checkAll(makeProject());
+
+      const schemaFindings = result.findings.filter((f) => f.rule === 'frontmatter-schema');
+      expect(schemaFindings).toHaveLength(0);
+
+      mockReaddir.mockRejectedValue(new Error('ENOENT'));
+    });
+
+    // --- Rules 13 & 14: Initiative plan rules ---
+
+    describe('Rule 13: initiative-entry-vs-arch', () => {
+      const INITIATIVE_PLAN_PATH = '/fake/project/project-documents/user/project-guides/001-initiative-plan.test-project.md';
+      const ARCH_PATH = '/fake/project/project-documents/user/architecture/140-arch.test-system.md';
+
+      function setupInitiativeMocks(
+        initiativeEntries: Array<{ index: number; name: string; isChecked: boolean }>,
+        archStatus: string,
+        overrides: Partial<IArtifactIntrospector> = {},
+      ) {
+        mockReaddir.mockImplementation(async (dir: string) => {
+          if (dir.endsWith('/architecture')) return ['140-arch.test-system.md', '140-slices.test-system.md'];
+          if (dir.endsWith('/project-guides')) return ['001-initiative-plan.test-project.md'];
+          throw new Error('ENOENT');
+        });
+
+        const mock = makeMockIntrospector({
+          parseSlicePlan: vi.fn<(path: string) => Promise<SlicePlanResult>>().mockImplementation(
+            async (path: string) => {
+              if (path.includes('001-initiative-plan')) {
+                return {
+                  filePath: INITIATIVE_PLAN_PATH,
+                  entries: initiativeEntries.map((e, i) => ({
+                    ...e,
+                    status: (e.isChecked ? 'complete' : 'in_progress') as NormalizedStatus,
+                    lineIndex: i,
+                    indexSource: 'explicit' as const,
+                  })),
+                  totalSlices: initiativeEntries.length,
+                  completedSlices: initiativeEntries.filter((e) => e.isChecked).length,
+                };
+              }
+              // Default: slice plan with no entries
+              return { filePath: path, entries: [], totalSlices: 0, completedSlices: 0 };
+            },
+          ),
+          parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(
+            async (path: string) => {
+              if (path.includes('140-arch')) {
+                return { filePath: ARCH_PATH, found: true, data: { status: archStatus } };
+              }
+              if (path.includes('001-initiative-plan')) {
+                return { filePath: INITIATIVE_PLAN_PATH, found: true, data: { status: 'in_progress' } };
+              }
+              return { filePath: path, found: true, data: { status: 'in-progress' } };
+            },
+          ),
+          ...overrides,
+        });
+
+        return mock;
+      }
+
+      afterEach(() => {
+        mockReaddir.mockRejectedValue(new Error('ENOENT'));
+      });
+
+      it('warns when arch is complete but initiative entry is unchecked', async () => {
+        const mock = setupInitiativeMocks(
+          [{ index: 140, name: 'MCP Server Architecture', isChecked: false }],
+          'complete',
+        );
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const finding = result.findings.find((f) => f.rule === 'initiative-entry-vs-arch');
+        expect(finding).toBeDefined();
+        expect(finding!.severity).toBe('warning');
+        expect(finding!.description).toContain('is complete');
+        expect(finding!.description).toContain('unchecked');
+        expect(finding!.fixable).toBe(true);
+        expect(finding!.fixAction?.type).toBe('update-checkbox');
+        expect(finding!.fixAction?.filePath).toBe(INITIATIVE_PLAN_PATH);
+      });
+
+      it('warns when initiative entry is checked but arch is not complete', async () => {
+        const mock = setupInitiativeMocks(
+          [{ index: 140, name: 'MCP Server Architecture', isChecked: true }],
+          'in-progress',
+        );
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const finding = result.findings.find((f) => f.rule === 'initiative-entry-vs-arch');
+        expect(finding).toBeDefined();
+        expect(finding!.severity).toBe('warning');
+        expect(finding!.description).toContain('is checked');
+        expect(finding!.description).toContain('"in-progress"');
+        expect(finding!.fixable).toBe(true);
+        expect(finding!.fixAction?.type).toBe('update-frontmatter');
+        expect(finding!.fixAction?.filePath).toBe(ARCH_PATH);
+      });
+
+      it('produces no finding when arch is complete and entry is checked', async () => {
+        const mock = setupInitiativeMocks(
+          [{ index: 140, name: 'MCP Server Architecture', isChecked: true }],
+          'complete',
+        );
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const findings = result.findings.filter((f) => f.rule === 'initiative-entry-vs-arch');
+        expect(findings).toHaveLength(0);
+      });
+
+      it('warns when initiative entry is checked but slice plan has incomplete slices', async () => {
+        const mock = setupInitiativeMocks(
+          [{ index: 140, name: 'MCP Server Architecture', isChecked: true }],
+          'complete',
+          {
+            parseSlicePlan: vi.fn<(path: string) => Promise<SlicePlanResult>>().mockImplementation(
+              async (path: string) => {
+                if (path.includes('001-initiative-plan')) {
+                  return {
+                    filePath: path,
+                    entries: [{ index: 140, name: 'MCP Server Architecture', isChecked: true, status: 'complete', lineIndex: 0, indexSource: 'explicit', retroactive: false }],
+                    totalSlices: 1,
+                    completedSlices: 1,
+                  };
+                }
+                if (path.includes('140-slices')) {
+                  return {
+                    filePath: path,
+                    entries: [
+                      { index: 141, name: 'Slice A', isChecked: true, status: 'complete', lineIndex: 0, indexSource: 'explicit', retroactive: false },
+                      { index: 142, name: 'Slice B', isChecked: false, status: 'not_started', lineIndex: 1, indexSource: 'explicit', retroactive: false },
+                      { index: 143, name: 'Slice C', isChecked: false, status: 'not_started', lineIndex: 2, indexSource: 'explicit', retroactive: false },
+                    ],
+                    totalSlices: 3,
+                    completedSlices: 1,
+                  };
+                }
+                return { filePath: path, entries: [], totalSlices: 0, completedSlices: 0 };
+              },
+            ),
+          },
+        );
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const finding = result.findings.find(
+          (f) => f.rule === 'initiative-entry-vs-arch' && f.description.includes('incomplete slice'),
+        );
+        expect(finding).toBeDefined();
+        expect(finding!.severity).toBe('warning');
+        expect(finding!.description).toContain('2 incomplete slices');
+        expect(finding!.fixable).toBe(false);
+      });
+
+      it('skips initiative entries with no corresponding arch file', async () => {
+        const mock = setupInitiativeMocks(
+          [{ index: 999, name: 'No Arch Initiative', isChecked: false }],
+          'complete',
+        );
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const findings = result.findings.filter((f) => f.rule === 'initiative-entry-vs-arch');
+        expect(findings).toHaveLength(0);
+      });
+
+      it('produces no finding when no initiative plan file exists', async () => {
+        mockReaddir.mockImplementation(async (dir: string) => {
+          if (dir.endsWith('/architecture')) return ['140-arch.test-system.md', '140-slices.test-system.md'];
+          // No project-guides directory
+          throw new Error('ENOENT');
+        });
+        const mock = makeMockIntrospector();
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const findings = result.findings.filter((f) => f.rule === 'initiative-entry-vs-arch');
+        expect(findings).toHaveLength(0);
+        mockReaddir.mockRejectedValue(new Error('ENOENT'));
+      });
+    });
+
+    describe('Rule 14: initiative-plan-status-vs-entries', () => {
+      const INITIATIVE_PLAN_PATH = '/fake/project/project-documents/user/project-guides/001-initiative-plan.test-project.md';
+
+      afterEach(() => {
+        mockReaddir.mockRejectedValue(new Error('ENOENT'));
+      });
+
+      it('warns when all entries checked but plan status is not complete', async () => {
+        mockReaddir.mockImplementation(async (dir: string) => {
+          if (dir.endsWith('/architecture')) return [];
+          if (dir.endsWith('/project-guides')) return ['001-initiative-plan.test-project.md'];
+          throw new Error('ENOENT');
+        });
+
+        const mock = makeMockIntrospector({
+          parseSlicePlan: vi.fn<(path: string) => Promise<SlicePlanResult>>().mockImplementation(
+            async (path: string) => {
+              if (path.includes('001-initiative-plan')) {
+                return {
+                  filePath: INITIATIVE_PLAN_PATH,
+                  entries: [
+                    { index: 140, name: 'Init A', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+                    { index: 160, name: 'Init B', status: 'complete', isChecked: true, lineIndex: 1, indexSource: 'explicit', retroactive: false },
+                  ],
+                  totalSlices: 2,
+                  completedSlices: 2,
+                };
+              }
+              return { filePath: path, entries: [], totalSlices: 0, completedSlices: 0 };
+            },
+          ),
+          parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(
+            async (path: string) => {
+              if (path.includes('001-initiative-plan')) {
+                return { filePath: INITIATIVE_PLAN_PATH, found: true, data: { status: 'in_progress' } };
+              }
+              return { filePath: path, found: true, data: { status: 'in-progress' } };
+            },
+          ),
+        });
+
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const finding = result.findings.find((f) => f.rule === 'initiative-plan-status-vs-entries');
+        expect(finding).toBeDefined();
+        expect(finding!.severity).toBe('warning');
+        expect(finding!.description).toContain('All 2 initiative entries');
+        expect(finding!.fixable).toBe(true);
+        expect(finding!.fixAction?.type).toBe('update-frontmatter');
+        expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'complete' });
+      });
+
+      it('warns when plan status is complete but entries are not all checked', async () => {
+        mockReaddir.mockImplementation(async (dir: string) => {
+          if (dir.endsWith('/architecture')) return [];
+          if (dir.endsWith('/project-guides')) return ['001-initiative-plan.test-project.md'];
+          throw new Error('ENOENT');
+        });
+
+        const mock = makeMockIntrospector({
+          parseSlicePlan: vi.fn<(path: string) => Promise<SlicePlanResult>>().mockImplementation(
+            async (path: string) => {
+              if (path.includes('001-initiative-plan')) {
+                return {
+                  filePath: INITIATIVE_PLAN_PATH,
+                  entries: [
+                    { index: 140, name: 'Init A', status: 'complete', isChecked: true, lineIndex: 0, indexSource: 'explicit', retroactive: false },
+                    { index: 160, name: 'Init B', status: 'in_progress', isChecked: false, lineIndex: 1, indexSource: 'explicit', retroactive: false },
+                  ],
+                  totalSlices: 2,
+                  completedSlices: 1,
+                };
+              }
+              return { filePath: path, entries: [], totalSlices: 0, completedSlices: 0 };
+            },
+          ),
+          parseFrontmatter: vi.fn<(path: string) => Promise<FrontmatterResult>>().mockImplementation(
+            async (path: string) => {
+              if (path.includes('001-initiative-plan')) {
+                return { filePath: INITIATIVE_PLAN_PATH, found: true, data: { status: 'complete' } };
+              }
+              return { filePath: path, found: true, data: { status: 'in-progress' } };
+            },
+          ),
+        });
+
+        const checker = new ConsistencyChecker(mock);
+        const result = await checker.checkAll(makeProject());
+
+        const finding = result.findings.find((f) => f.rule === 'initiative-plan-status-vs-entries');
+        expect(finding).toBeDefined();
+        expect(finding!.severity).toBe('warning');
+        expect(finding!.description).toContain('only 1/2 entries are checked');
+        expect(finding!.fixable).toBe(true);
+        expect(finding!.fixAction?.detail).toEqual({ key: 'status', value: 'in_progress' });
+      });
     });
   });
 });

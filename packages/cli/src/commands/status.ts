@@ -1,35 +1,48 @@
 import { join } from 'node:path';
 import { Command } from 'commander';
-import { FileProjectStore, WorkflowNavigator, GitWorktreeDiscovery, parseSlicePlan, resolveArtifactPath } from '@context-forge/core/node';
-import { resolveProject } from '@context-forge/core';
+import { FileProjectStore, WorkflowNavigator, GitWorktreeDiscovery, parseSlicePlan, resolveArtifactPath, ConfigManager } from '@context-forge/core/node';
+import { resolveProject, type ProjectData } from '@context-forge/core';
 import { resolveProjectWorktree, findWorktreeByNameOrId, type ResolutionSource } from '../utils/project.js';
 import { applyWorktreeOverlay } from '../utils/worktree-overlay.js';
 import { handleError, UserError } from '../utils/errors.js';
+import { checkoutLagWarning } from '../utils/upstreamLag.js';
+import { withJsonOption, withProjectOption } from '../options.js';
 import { printJson } from '../output/formatter.js';
 import { renderTable } from '../output/tables.js';
 import { label, value as valueStyle, success, dim, warn } from '../output/styles.js';
 
 export function registerStatusCommand(program: Command): void {
-  program
+  const statusCmd = program
     .command('status')
-    .description('Show workflow status for the active project')
-    .option('--json', 'Output as JSON')
-    .option('--project <id>', 'Project ID or name (overrides default)')
+    .description('Show workflow status for the active project');
+  withJsonOption(statusCmd);
+  withProjectOption(statusCmd);
+  statusCmd
     .option('--worktree <name>', 'Show status for a specific worktree')
-    .option('--worktrees', 'Show summary of all worktrees')
-    .action(async (opts: { json?: boolean; project?: string; worktree?: string; worktrees?: boolean }) => {
+    .option('--worktrees', 'Show summary of all worktrees');
+  statusCmd.action(async (opts: { json?: boolean; project?: string; worktree?: string; worktrees?: boolean }) => {
+      let resolutionFailed = false;
       try {
         if (opts.worktree && opts.worktrees) {
           throw new UserError('--worktree and --worktrees are mutually exclusive.');
         }
 
         const store = new FileProjectStore();
-        const { id, source, worktreeId: cwdWorktreeId } = await resolveProjectWorktree({ project: opts.project }, store);
-        const rawProject = await store.getById(id);
-
-        if (!rawProject) {
-          throw new UserError(`Project not found: '${id}'. Run cf project list to see available projects.`);
+        let id: string,
+          source: ResolutionSource,
+          cwdWorktreeId: string | undefined,
+          maybeProject: ProjectData | undefined;
+        try {
+          ({ id, source, worktreeId: cwdWorktreeId } = await resolveProjectWorktree({ project: opts.project }, store));
+          maybeProject = await store.getById(id);
+          if (!maybeProject) {
+            throw new UserError(`Project not found: '${id}'. Run cf project list to see available projects.`);
+          }
+        } catch (err) {
+          resolutionFailed = true;
+          throw err;
         }
+        const rawProject: ProjectData = maybeProject;
 
         // ── --worktrees dashboard ──────────────────────────────────────────
         if (opts.worktrees) {
@@ -114,8 +127,11 @@ export function registerStatusCommand(program: Command): void {
           ? (rawProject.worktrees ?? []).find((w) => w.id === resolvedWorktreeId)
           : undefined;
 
-        const nav = new WorkflowNavigator();
+        const config = new ConfigManager(project.projectPath);
+        const nav = new WorkflowNavigator(config);
         const status = await nav.getStatus(project);
+        const lagWarning = await checkoutLagWarning(project, resolvedWorktreeId);
+        if (lagWarning) status.warnings = [...(status.warnings ?? []), lagWarning];
 
         if (opts.json) {
           printJson({ ...status, resolutionSource: source, ...(worktreeCtx ? { worktree: worktreeCtx } : {}) });
@@ -166,9 +182,25 @@ export function registerStatusCommand(program: Command): void {
           console.log(label('Slice Plan'));
           console.log(dim(`  ${status.slicePlan.completed}/${status.slicePlan.total} slices complete`));
         }
+
+        // TD-2a: per-entry resolution failures (e.g. an unrecognized slice-design
+        // status) are collected as warnings rather than aborting the command (#62).
+        // Prefixed distinctly from the status fields above so a human or an agent
+        // parsing this output can tell "here's your status" from "here's what's wrong".
+        if (status.warnings && status.warnings.length > 0) {
+          console.log('');
+          console.log(warn('Warnings:'));
+          for (const w of status.warnings) {
+            console.log(warn(`  ⚠ ${w}`));
+          }
+        }
       } catch (err) {
-        // First-run messaging: suggest cf worktree init if CWD is a git worktree of a known project
-        if (err instanceof UserError) {
+        // First-run messaging: suggest cf worktree init if CWD is a git worktree of a
+        // known project — but only when project *resolution* itself failed. A UserError
+        // thrown later (e.g. an unknown --worktree name) means a project already
+        // resolved; showing this suggestion then would misreport an unrelated error as
+        // "no project found" and swallow the real one (exit 0 instead of erroring).
+        if (resolutionFailed && err instanceof UserError) {
           const shown = await showWorktreeSuggestion();
           if (shown) return;
         }

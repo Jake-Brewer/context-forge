@@ -15,6 +15,11 @@ export interface FieldDefinition {
   aliases: string[];
   label: string;
   enumValues?: string[];
+  /**
+   * The value is a root-relative file path to an arbitrary file, so stem
+   * normalization and index resolution (used for slice/task artifacts) do not apply.
+   */
+  pathValued?: boolean;
 }
 
 // Phase display strings
@@ -28,6 +33,24 @@ const PHASE_STRINGS = [
   'Phase 6: Implementation',
   'Phase 7: Integration',
 ] as const;
+
+/** Canonical concept-phase display string — single source of truth for callers that need it. */
+export const CONCEPT_PHASE: (typeof PHASE_STRINGS)[0] = PHASE_STRINGS[0];
+
+/** Canonical architecture-phase display string — single source of truth for callers that need it. */
+export const ARCHITECTURE_PHASE: (typeof PHASE_STRINGS)[2] = PHASE_STRINGS[2];
+
+/** Canonical slice-planning-phase display string — single source of truth for callers that need it. */
+export const SLICE_PLANNING_PHASE: (typeof PHASE_STRINGS)[3] = PHASE_STRINGS[3];
+
+/** Canonical slice-design-phase display string — single source of truth for callers that need it. */
+export const SLICE_DESIGN_PHASE: (typeof PHASE_STRINGS)[4] = PHASE_STRINGS[4];
+
+/** Canonical task-breakdown-phase display string — single source of truth for callers that need it. */
+export const TASK_BREAKDOWN_PHASE: (typeof PHASE_STRINGS)[5] = PHASE_STRINGS[5];
+
+/** Canonical implementation-phase display string — single source of truth for callers that need it. */
+export const IMPLEMENTATION_PHASE: (typeof PHASE_STRINGS)[6] = PHASE_STRINGS[6];
 
 const SPECIAL_PHASES = ['Ad-Hoc Tasks', 'Custom Instruction'] as const;
 
@@ -83,6 +106,7 @@ export const PROJECT_FIELDS: FieldDefinition[] = [
   { field: 'fileSlicePlan', type: 'string', required: false, readonly: false, group: 'artifacts', description: 'Slice plan document path (relative)', aliases: ['plan'], label: 'Slice Plan' },
   { field: 'fileSlice', type: 'string', required: false, readonly: false, group: 'artifacts', description: 'Current slice design path (relative)', aliases: ['slice'], label: 'Slice' },
   { field: 'fileTasks', type: 'string', required: false, readonly: false, group: 'artifacts', description: 'Current tasks file path (relative)', aliases: ['tasks'], label: 'Tasks' },
+  { field: 'fileComprehension', type: 'string', required: false, readonly: false, group: 'artifacts', description: 'Codebase comprehension doc path (relative to project root)', aliases: ['comprehension'], label: 'Codebase Comprehension', pathValued: true },
 
   // Workflow
   { field: 'developmentPhase', type: 'string', required: false, readonly: false, group: 'workflow', description: 'Current methodology phase', aliases: ['phase'], label: 'Phase', enumValues: ALL_PHASE_VALUES },
@@ -137,6 +161,11 @@ export function resolveFieldName(input: string): string | undefined {
   return fieldLookup[input.toLowerCase()];
 }
 
+/** True when the canonical field holds a root-relative file path (see `FieldDefinition.pathValued`). */
+export function isPathValuedField(field: string): boolean {
+  return PROJECT_FIELDS.some((f) => f.field === field && f.pathValued === true);
+}
+
 /**
  * Resolve a user-provided phase value to the full phase string.
  * Accepts phase numbers (0-7), short names, or full strings.
@@ -172,6 +201,11 @@ export function validateFieldValue(
 
 /** Field group display order. */
 export const FIELD_GROUPS: FieldGroup[] = ['identity', 'artifacts', 'workflow', 'metadata', 'custom'];
+
+/** Get field names belonging to a given group. */
+export function getFieldNamesByGroup(group: FieldGroup): string[] {
+  return PROJECT_FIELDS.filter((f) => f.group === group).map((f) => f.field);
+}
 
 /**
  * Returns the full schema structure for external consumption (MCP, CLI --schema).

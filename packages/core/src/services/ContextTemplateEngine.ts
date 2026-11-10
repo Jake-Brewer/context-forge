@@ -55,7 +55,7 @@ export class ContextTemplateEngine {
       const template = await this.buildTemplate(data);
 
       // Assemble sections into final context
-      const sections = await this.assembleSections(template, data);
+      const sections = this.assembleSections(template, data);
 
       // Format and return final output
       return this.formatOutput(sections);
@@ -76,7 +76,7 @@ export class ContextTemplateEngine {
     sections.push({
       key: 'project-intro',
       title: '',
-      content: await this.statementManager.getStatement('project-statement'),
+      content: this.statementManager.getStatement('project-statement'),
       conditional: false,
       order: 1
     });
@@ -89,6 +89,17 @@ export class ContextTemplateEngine {
       conditional: false,
       order: 1.5
     });
+
+    // 1.6. Codebase Reference (conditional, slice 274). The text carries its own heading.
+    if (data.codebaseReference?.trim()) {
+      sections.push({
+        key: 'codebase-reference',
+        title: '',
+        content: data.codebaseReference,
+        conditional: false,
+        order: 1.6
+      });
+    }
 
     // 2. Context initialization prompt
     const contextInitPrompt = await this.promptParser.getContextInitializationPrompt();
@@ -108,6 +119,17 @@ export class ContextTemplateEngine {
       conditional: false,
       order: 3
     });
+
+    // 3.5. Permissiveness fragment (conditional, slice 246). The fragment carries its own heading.
+    if (data.permissivenessFragment?.trim()) {
+      sections.push({
+        key: 'permissiveness',
+        title: '',
+        content: data.permissivenessFragment,
+        conditional: false,
+        order: 3.5
+      });
+    }
 
     // 4. Additional instructions section (conditional)
     if (data.additionalNotes && data.additionalNotes.trim()) {
@@ -150,7 +172,7 @@ export class ContextTemplateEngine {
   /**
    * Assemble sections into final context string
    */
-  async assembleSections(template: ContextTemplate, data: EnhancedContextData): Promise<string> {
+  assembleSections(template: ContextTemplate, data: EnhancedContextData): string {
     const processedSections: string[] = [];
 
     // Sort sections by order
@@ -163,7 +185,7 @@ export class ContextTemplateEngine {
       }
 
       // Process section content
-      const processedContent = await this.processSection(section, data);
+      const processedContent = this.processSection(section, data);
 
       if (processedContent.trim()) {
         processedSections.push(processedContent);
@@ -177,7 +199,7 @@ export class ContextTemplateEngine {
   /**
    * Process individual section with template variables
    */
-  private async processSection(section: ContextSection, data: EnhancedContextData): Promise<string> {
+  private processSection(section: ContextSection, data: EnhancedContextData): string {
     let content = section.content;
 
     // Replace template variables

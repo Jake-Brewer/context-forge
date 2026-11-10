@@ -1,18 +1,181 @@
 // Guide management types and strategy interface
+import { CONFIG_KEYS } from '../config/ConfigKeys.js';
 
 /** Installation method used for the ai-project-guide */
-export type GuideMethod = 'submodule' | 'clone' | 'manual';
+export type GuideMethod = 'submodule' | 'clone' | 'tarball';
+
+/** Canonical guide methods, in the order they are presented to users. */
+export const GUIDE_METHODS: readonly GuideMethod[] = ['submodule', 'clone', 'tarball'];
+
+/**
+ * Deprecated strategy names accepted on input, mapped to their canonical
+ * replacement. Callers check this to emit a deprecation warning without
+ * re-comparing strings. This is the only place an alias is spelled in core
+ * source outside the ConfigKeys enum (which keeps `manual` so existing
+ * shared config files still validate).
+ */
+export const GUIDE_METHOD_DEPRECATED_ALIASES: Readonly<Record<string, GuideMethod>> = {
+  manual: 'tarball',
+};
+
+/**
+ * Normalize a strategy name from any input boundary (config value, CLI
+ * `--strategy` flag, MCP tool parameter) into a canonical GuideMethod.
+ * Throws when the input is neither canonical nor a known deprecated alias.
+ */
+export function normalizeGuideMethod(input: string): GuideMethod {
+  const candidate = input.trim();
+  const canonical = GUIDE_METHODS.find((method) => method === candidate);
+  if (canonical) {
+    return canonical;
+  }
+  const aliased = GUIDE_METHOD_DEPRECATED_ALIASES[candidate];
+  if (aliased) {
+    return aliased;
+  }
+  throw new Error(
+    `Invalid guide strategy '${input}'. Valid values: ${GUIDE_METHODS.join(', ')}.`
+  );
+}
+
+/**
+ * True when `input` is a deprecated alias rather than a canonical method.
+ * Lets a boundary decide whether to print the D5 deprecation warning.
+ */
+export function isDeprecatedGuideMethodAlias(input: string): boolean {
+  return input.trim() in GUIDE_METHOD_DEPRECATED_ALIASES;
+}
+
+/**
+ * The one spelling of the D5 deprecation warning. The CLI prints it to stderr
+ * and the MCP server returns it as a notice, so the sentence lives here rather
+ * than at each boundary.
+ */
+export function guideMethodDeprecationMessage(alias: string, method: GuideMethod): string {
+  return `Strategy '${alias}' is deprecated; use '${method}' instead.`;
+}
+
+/** The result fields guideExcludeNotices reads; InstallResult and UpdateResult both satisfy it. */
+export interface GuideExcludeNoticeSource {
+  method: GuideMethod;
+  unmatchedExclude?: string[];
+  excludeIgnored?: boolean;
+  /** InstallResult reports its version here. */
+  version?: string | null;
+  /** UpdateResult reports its version here. */
+  newVersion?: string | null;
+  /** UpdateResult: why the config file was left out of the guide commit. */
+  configNotice?: string;
+}
+
+/**
+ * Warnings about guide.exclude for an install or update result: one per
+ * pattern that matched nothing, one when a non-tarball install ignored the
+ * key, and one when the config file was left out of the guide commit. Shared by the CLI (stderr) and MCP (notices) so the wording lives here.
+ */
+export function guideExcludeNotices(result: GuideExcludeNoticeSource): string[] {
+  const version = result.newVersion ?? result.version ?? 'the guide';
+  const notices = (result.unmatchedExclude ?? []).map(
+    (pattern) => `guide.exclude entry "${pattern}" matched nothing in ${version}`
+  );
+  if (result.excludeIgnored) {
+    notices.push(`guide.exclude is set but ignored for ${result.method} installs`);
+  }
+  if (result.configNotice) {
+    notices.push(result.configNotice);
+  }
+  return notices;
+}
+
+/**
+ * The installation strategies offered to users, with the one-line trade-off
+ * shown for each. `cf init --help`, `cf guides install --help` and the MCP
+ * `guide_install` description all render from this single descriptor (D8),
+ * so the wording cannot drift between surfaces. Adding a GuideMethod without
+ * an entry here is a compile error.
+ */
+export const GUIDE_STRATEGIES: Record<GuideMethod, { summary: string }> = {
+  tarball: { summary: 'plain files with no git wiring, simplest for teams' },
+  submodule: {
+    summary: 'version-pinned and updatable, but teammates must run git submodule update',
+  },
+  clone: { summary: 'a full working copy you can commit to, larger checkout' },
+};
+
+/**
+ * The strategy used when neither a flag nor config names one. Read from the
+ * config key's default so the two cannot disagree.
+ */
+export const DEFAULT_GUIDE_METHOD: GuideMethod = normalizeGuideMethod(
+  CONFIG_KEYS['guide.git_strategy'].default as string
+);
+
+/**
+ * One strategy rendered for help text, marking the default. Shared by the CLI
+ * `--strategy` help and the MCP tool description (D8).
+ */
+export function describeGuideStrategy(name: string, summary: string): string {
+  const marker = name === DEFAULT_GUIDE_METHOD ? 'default; ' : '';
+  return `${name} (${marker}${summary})`;
+}
+
+/**
+ * Checkout state of a submodule-installed guide, as `git submodule status`
+ * reports it. Only meaningful for the submodule method.
+ */
+export type SubmoduleCheckoutState = 'in_sync' | 'out_of_sync' | 'not_initialized';
+
+/** Human-readable labels for each checkout state, used in CLI and tool output. */
+export const CHECKOUT_STATE_LABELS: Record<SubmoduleCheckoutState, string> = {
+  in_sync: 'in sync',
+  out_of_sync: 'out of sync',
+  not_initialized: 'not initialized',
+};
+
+/**
+ * Upper bound on the automatic `git submodule update --init` performed by a
+ * read command. A blackholed proxy would otherwise block for the OS TCP
+ * timeout. User-initiated install and update stay unbounded (D10).
+ */
+export const GUIDE_INIT_TIMEOUT_MS = 60_000;
 
 /** Full status of a guide installation */
 export interface GuideInfo {
   installed: boolean;
   method: GuideMethod | null;
+  /**
+   * Submodule checkout state; null for clone/tarball installs and when no
+   * guide is installed.
+   */
+  checkout: SubmoduleCheckoutState | null;
   version: string | null;
   path: string;
   source: string;
   latestVersion: string | null;
   updateAvailable: boolean;
   usingBundledPrompt: boolean;
+  /** Excludes the installed guide was extracted with (from the record); [] when none or non-tarball. */
+  excludeApplied: string[];
+  /** guide.exclude from config, parsed. */
+  excludeConfigured: string[];
+}
+
+/** What GuideDetector can determine on its own; GuideManager adds the exclude fields. */
+export type DetectedGuideInfo = Omit<GuideInfo, 'excludeApplied' | 'excludeConfigured'>;
+
+/**
+ * Outcome of GuideManager.ensureCheckout().
+ *
+ * `none` means nothing needed doing; `initialized` means an uninitialized
+ * submodule was checked out; `warned` means the checkout differs from the
+ * pinned commit and was deliberately left alone (D2).
+ */
+export interface EnsureCheckoutResult {
+  action: 'none' | 'initialized' | 'warned';
+  /** Short SHA of the checked-out guide commit, when action is 'initialized'. */
+  commit?: string;
+  /** Human-readable notice, present whenever action is not 'none'. */
+  message?: string;
 }
 
 /** Result of a guide installation */
@@ -21,6 +184,30 @@ export interface InstallResult {
   version: string | null;
   method: GuideMethod;
   path: string;
+  /**
+   * Set when the requested strategy was named by a deprecated alias (e.g.
+   * `manual`), carrying the original spelling. Callers print a deprecation
+   * warning; absent when the canonical name was used (D5).
+   */
+  deprecatedAlias?: string;
+  /**
+   * Whether the strategy committed the installed guide. False when the guide
+   * matches what is already committed, the project gitignores it, or it is not
+   * a git work tree; absent for strategies that have nothing to commit (clone).
+   */
+  committed?: boolean;
+  /**
+   * Set when an explicit strategy differed from the configured one and was
+   * written to the shared project config, so a later bare install — or a
+   * teammate's — uses the same strategy. Absent when nothing was written.
+   */
+  persistedStrategy?: GuideMethod;
+  /** Tarball: the guide.exclude list applied. Absent when empty. */
+  exclude?: string[];
+  /** Tarball: exclude patterns that matched no archive entry. Absent when empty. */
+  unmatchedExclude?: string[];
+  /** Non-tarball install with guide.exclude set; nothing was filtered. */
+  excludeIgnored?: boolean;
 }
 
 /** Result of a guide update */
@@ -29,6 +216,58 @@ export interface UpdateResult {
   previousVersion: string | null;
   newVersion: string | null;
   method: GuideMethod;
+  /**
+   * True when the update also synced a non-default worktree's submodule
+   * checkout. Lets callers report the sync even when previousVersion ===
+   * newVersion (the host pointer was already current). Absent otherwise.
+   */
+  worktreeSynced?: boolean;
+  /** Whether the update was committed; see InstallResult.committed. */
+  committed?: boolean;
+  /** See InstallResult.exclude. */
+  exclude?: string[];
+  /** See InstallResult.unmatchedExclude. */
+  unmatchedExclude?: string[];
+  /** See InstallResult.excludeIgnored. */
+  excludeIgnored?: boolean;
+  /** True when the guide was re-extracted at the same version because guide.exclude changed. */
+  excludeChanged?: boolean;
+  /** Tarball: file counts of the staged guide against the installed one, whenever a diff ran. */
+  preview?: GuidePreview;
+  /** Tarball: the staged guide is identical to the installed one; nothing was swapped or committed. */
+  unchanged?: true;
+  /** Tarball: the confirm callback declined; the installed guide is untouched. */
+  cancelled?: true;
+  /** Tarball: whether .context-forge.toml went into the guide commit (guide.exclude changed). */
+  configCommitted?: boolean;
+  /** Tarball: why .context-forge.toml was left out of that commit, when it was. */
+  configNotice?: string;
+}
+
+/** How a staged guide differs from the installed one, in files. */
+export interface GuidePreview {
+  added: number;
+  removed: number;
+  changed: number;
+}
+
+/** Tarball-only options for install and update; GuideManager never passes them to other strategies. */
+export interface TarballUpdateOptions {
+  /** Remote tag to install instead of the newest. Rejected with a local source. */
+  version?: string;
+  /**
+   * Directory a relative local --source resolves against. Defaults to the
+   * project root; the CLI passes its working directory.
+   */
+  sourceRoot?: string;
+  /** Called with the preview before the swap (update only); resolve false to cancel. */
+  confirm?: (preview: GuidePreview, versions: GuideVersionChange) => Promise<boolean>;
+}
+
+/** The installed version and the one an update would install, for the preview header. */
+export interface GuideVersionChange {
+  from: string | null;
+  to: string;
 }
 
 /** Result of uninstalling a guide */
@@ -54,13 +293,28 @@ export interface DetectionResult {
 
 /** Strategy interface for guide installation methods */
 export interface InstallStrategy {
-  install(projectPath: string, source: string, targetDir: string): Promise<InstallResult>;
-  update(projectPath: string, targetDir: string): Promise<UpdateResult>;
+  install(projectPath: string, source: string, targetDir: string, options?: TarballUpdateOptions): Promise<InstallResult>;
+  update(projectPath: string, targetDir: string, source: string, options?: TarballUpdateOptions): Promise<UpdateResult>;
   detect(projectPath: string, targetDir: string): Promise<DetectionResult | null>;
 }
 
 // Constants
+
+/**
+ * Stated wherever the guide directory is described, so a user learns the rule
+ * before `cf guides update` overwrites an edit they made in place (D9, #82).
+ */
+export const GUIDE_MANAGED_NOTICE =
+  'This directory is managed by cf and overwritten on `cf guides update`. ' +
+  'Put project-specific customizations under `project-documents/user/`.';
+
 export const DEFAULT_SOURCE_GIT = 'https://github.com/ecorkran/ai-project-guide.git';
 export const DEFAULT_SOURCE_API = 'https://api.github.com/repos/ecorkran/ai-project-guide';
 export const GUIDE_RELATIVE_PATH = 'project-documents/ai-project-guide';
+/** Slice-design template, relative to the guide root (GUIDE_RELATIVE_PATH). */
+export const SLICE_DESIGN_TEMPLATE_RELATIVE_PATH = 'project-guides/templates/slice-design.md';
 export const VERSION_MARKER_FILE = '.context-forge-guide-version';
+/** Version recorded for a guide installed from a local archive rather than a remote tag. */
+export const LOCAL_VERSION_MARKER = 'local';
+/** guide.exclude list a tarball install applied, one pattern per line; written only when the list is not empty. */
+export const EXCLUDE_RECORD_FILE = '.context-forge-guide-exclude';

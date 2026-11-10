@@ -1,128 +1,127 @@
-import * as readline from 'node:readline';
+import { join } from 'node:path';
 import { Command } from 'commander';
 import {
   FileProjectStore,
   ArtifactIntrospector,
   ConsistencyChecker,
   ConfigManager,
+  detectDocuments,
+  updateFrontmatterField,
+  applyFixPlan,
+  scopeCheck,
+  resolveFixInvokingPath,
+  planFixRun,
 } from '@context-forge/core/node';
-import type {
-  ConsistencyCheckResult,
-  ConsistencyFixResult,
-  ConsistencyFinding,
+import {
+  formatDateProject,
+  mergeCheckResults,
+  buildAttributedViews,
+  runAttributed,
 } from '@context-forge/core';
+import type { ConsistencyCheckResult, ConsistencyFixResult, ProjectData } from '@context-forge/core';
+import type { CheckScope } from '@context-forge/core/node';
 import { resolveProjectWorktree } from '../utils/project.js';
-import { applyWorktreeOverlay } from '../utils/worktree-overlay.js';
+import { withJsonOption, withProjectOption, withYesOption, withFixOption } from '../options.js';
+import { resolveOperationPath } from '../utils/worktree-overlay.js';
 import { handleError, UserError } from '../utils/errors.js';
+import { warnIfBehindUpstream } from '../utils/upstreamLag.js';
+import { askConfirmation } from '../utils/confirm.js';
 import { printJson } from '../output/formatter.js';
-import { label, dim, error as errorStyle, warn as warnStyle } from '../output/styles.js';
-
-const SEVERITY_ICON: Record<string, string> = {
-  error: '✗',
-  warning: '⚠',
-  info: 'ℹ',
-};
-
-/** Prompt user for y/N confirmation via stdin. Returns true if confirmed. */
-function askConfirmation(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
-  });
-}
-
-function isFixResult(result: ConsistencyCheckResult): result is ConsistencyFixResult {
-  return 'fixLog' in result;
-}
-
-/** Merge findings from multiple checkAll runs, deduplicating by rule+location+description. */
-function mergeCheckResults(results: ConsistencyCheckResult[]): ConsistencyCheckResult {
-  if (results.length === 1) return results[0];
-  const seen = new Set<string>();
-  const allFindings: ConsistencyFinding[] = [];
-  for (const result of results) {
-    for (const finding of result.findings) {
-      const key = `${finding.rule}|${finding.location}|${finding.description}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        allFindings.push(finding);
-      }
-    }
-  }
-  const projectPath = results[0].projectPath;
-  const errors = allFindings.filter((f) => f.severity === 'error').length;
-  const warnings = allFindings.filter((f) => f.severity === 'warning').length;
-  const infos = allFindings.filter((f) => f.severity === 'info').length;
-  const total = allFindings.length;
-  const parts: string[] = [];
-  if (errors > 0) parts.push(`${errors} error${errors !== 1 ? 's' : ''}`);
-  if (warnings > 0) parts.push(`${warnings} warning${warnings !== 1 ? 's' : ''}`);
-  if (infos > 0) parts.push(`${infos} info${infos !== 1 ? 's' : ''}`);
-  const summary = total === 0 ? 'No inconsistencies found' : `${total} finding${total !== 1 ? 's' : ''}: ${parts.join(', ')}`;
-  return { projectPath, findings: allFindings, totalFindings: total, errors, warnings, infos, summary };
-}
-
-function formatFinding(finding: ConsistencyFinding, fixResult?: ConsistencyFixResult): string {
-  const icon = SEVERITY_ICON[finding.severity] ?? '?';
-  const colorFn = finding.severity === 'error' ? errorStyle : finding.severity === 'warning' ? warnStyle : dim;
-  const lines: string[] = [];
-  lines.push(colorFn(`  ${icon} ${finding.description}`));
-
-  if (fixResult && finding.fixable) {
-    const logEntry = fixResult.fixLog.find((e) => e.rule === finding.rule);
-    if (logEntry) {
-      lines.push(dim(`    → Fixed: ${logEntry.before} → ${logEntry.after} in ${logEntry.filePath}`));
-    }
-  } else {
-    lines.push(dim(`    → ${finding.suggestedFix}`));
-  }
-
-  return lines.join('\n');
-}
-
-/** Extract slice index prefix from a finding description like "[175] ..." */
-function extractFindingSliceIndex(description: string): string | null {
-  const match = /^\[(\d+)\]\s/.exec(description);
-  return match ? match[1] : null;
-}
-
-/** Group findings by slice index prefix, with non-prefixed in a "Project-level" group */
-function groupFindings(findings: ConsistencyFinding[]): Map<string, ConsistencyFinding[]> {
-  const groups = new Map<string, ConsistencyFinding[]>();
-  for (const finding of findings) {
-    const idx = extractFindingSliceIndex(finding.description);
-    const key = idx ?? 'project';
-    const group = groups.get(key) ?? [];
-    group.push(finding);
-    groups.set(key, group);
-  }
-  return groups;
-}
+import { label, dim } from '../output/styles.js';
+import { printFixPlan, plannedFixCount } from '../output/fixReport.js';
+import { printCheckOutput } from '../output/checkReport.js';
 
 interface CheckOpts {
   json?: boolean;
   project?: string;
   fix?: boolean;
+  /** Commander sets this to false for --no-commit; undefined when the flag is absent. */
+  commit?: boolean;
   slice?: string;
   yes?: boolean;
+  setReviewNone?: string;
+}
+
+/**
+ * Declare a slice review-exempt (#57): writes review: none to its slice-design
+ * frontmatter, so evaluateReviewGate() skips the slice/tasks/code review gates
+ * for it (not the architecture gate, which is a different document). A direct,
+ * single-purpose mutation — not part of the check/fix pipeline, since it
+ * doesn't depend on any finding having been detected first.
+ *
+ * Waiving reviews is a PM decision (slice 928 TD-6), so the write needs either --yes
+ * or an interactive "y". --json without --yes, or a non-TTY stdin without --yes, is
+ * an error rather than a prompt that would hang. Declining writes nothing.
+ */
+async function setReviewNoneAction(indexArg: string, opts: CheckOpts): Promise<void> {
+  const index = parseInt(indexArg, 10);
+  if (isNaN(index)) {
+    throw new UserError(`Invalid slice index: '${indexArg}'`);
+  }
+
+  const store = new FileProjectStore();
+  const { id } = await resolveProjectWorktree({ project: opts.project }, store);
+  const project = await store.getById(id);
+  if (!project) {
+    throw new UserError(`Project not found: '${id}'. Run cf project list to see available projects.`);
+  }
+  if (!project.projectPath) {
+    throw new UserError('No projectPath configured. Set one with: cf set projectPath /path/to/project');
+  }
+
+  const docs = await detectDocuments(project.projectPath, index);
+  if (!docs.sliceDesign) {
+    throw new UserError(
+      `No slice-design file found for slice ${index}. review: none is set on the slice design, not the task file.`,
+    );
+  }
+
+  if (opts.json && !opts.yes) {
+    throw new UserError('--yes is required with --json for --set-review-none');
+  }
+  if (!opts.yes && !process.stdin.isTTY) {
+    throw new UserError('--yes is required for --set-review-none in a non-interactive shell');
+  }
+  if (!opts.json) {
+    console.log(label(`Slice ${index}: ${docs.sliceDesign}`));
+    console.log('Setting review: none waives the slice, tasks, and code review gates for this slice.');
+    console.log('This is a Project Manager decision.');
+  }
+  if (!opts.yes && !(await askConfirmation('Proceed? [y/N] '))) {
+    console.log('Cancelled.');
+    return;
+  }
+
+  const filePath = join(project.projectPath, docs.sliceDesign);
+  const entry = await updateFrontmatterField(filePath, 'review', 'none', formatDateProject());
+
+  if (opts.json) {
+    printJson({ slice: index, filePath: docs.sliceDesign, field: 'review', before: entry.before, after: entry.after });
+    return;
+  }
+  console.log(label(`Set review: none on slice ${index}`));
 }
 
 export function registerCheckCommand(program: Command): void {
-  program
+  const checkCmd = program
     .command('check')
-    .description('Run consistency checks on project artifacts')
-    .option('--json', 'Output as JSON')
-    .option('--project <id>', 'Project ID or name (overrides default)')
-    .option('--fix', 'Apply non-destructive corrections (when available)')
-    .option('--slice <index>', 'Check only a specific slice by index')
-    .option('--yes', 'Skip confirmation prompt in fix mode')
-    .action(async (opts: CheckOpts) => {
+    .description('Run consistency checks on project artifacts');
+  withJsonOption(checkCmd);
+  withProjectOption(checkCmd);
+  withFixOption(checkCmd);
+  checkCmd.option('--no-commit', 'With --fix, write fixes in every checkout but commit nothing; the written files stay uncommitted for you to commit');
+  checkCmd.option('--slice <index>', 'Check only a specific slice by index');
+  checkCmd.option('--set-review-none <index>', 'Declare a slice review-exempt (writes review: none to its slice design)');
+  withYesOption(checkCmd);
+  checkCmd.action(async (opts: CheckOpts) => {
       try {
+        if (opts.setReviewNone !== undefined) {
+          await setReviewNoneAction(opts.setReviewNone, opts);
+          return;
+        }
+
         const store = new FileProjectStore();
-        const { id } = await resolveProjectWorktree({ project: opts.project }, store);
+        const { id, worktreeId } = await resolveProjectWorktree({ project: opts.project }, store);
         const project = await store.getById(id);
 
         if (!project) {
@@ -130,14 +129,15 @@ export function registerCheckCommand(program: Command): void {
         }
 
         const introspector = new ArtifactIntrospector();
-        const checker = new ConsistencyChecker(introspector);
+        const config = new ConfigManager(project.projectPath);
+        const checker = new ConsistencyChecker(introspector, config);
 
         // Determine fix mode: explicit flag > config key > false
         let fixMode = opts.fix ?? false;
+        const explicitFix = fixMode;
         if (!fixMode) {
           try {
-            const cm = new ConfigManager(project.projectPath);
-            const autoFixResult = await cm.get('workflow.auto_fix');
+            const autoFixResult = await config.get('workflow.auto_fix');
             if (autoFixResult.value === true) {
               fixMode = true;
             }
@@ -155,43 +155,45 @@ export function registerCheckCommand(program: Command): void {
         // Build project views: one per worktree overlay so all workflow fields are visible.
         // Findings are merged and deduplicated — aggregate rules (filesystem scan) run per
         // view but produce the same results, so deduplication collapses them correctly.
-        const worktrees = project.worktrees ?? [];
-        const projectViews = worktrees.length > 0
-          ? worktrees.map((wt) => applyWorktreeOverlay(project, wt.id))
-          : [project];
+        // Each view stays paired with the worktree that produced it, so findings
+        // can be attributed before the merge. The dedup key has no worktree
+        // component, so attributing after the merge would misattribute
+        // first-seen-wins duplicates (#87).
+        // buildAttributedViews owns the count-not-presence rule; it is shared
+        // with MCP's workflow_check so the invariant cannot drift between the
+        // two consumers of the same merge.
+        await warnIfBehindUpstream(project, worktreeId);
+
+        const projectViews = buildAttributedViews(project);
+        const showWorktree = projectViews.some((v) => v.worktree !== undefined);
+
+        // Top-level projectPath means the invoking checkout (D6). Each view's
+        // own projectPath has been overlaid to its worktree path, so the merge
+        // must be told which one that is.
+        const invokingPath = resolveOperationPath(project, worktreeId) ?? project.projectPath;
+
+        // --slice narrows to one slice; otherwise every view runs checkAll()
+        const scope = scopeCheck(checker, projectViews, singleSlice);
 
         let result: ConsistencyCheckResult;
-
-        if (singleSlice !== null) {
-          // Narrow to single slice — set fileSlice temporarily and use check()
-          const sliceViews = projectViews.map((v) => ({ ...v, fileSlice: `${singleSlice}-slice` }));
-          const checkResults = await Promise.all(sliceViews.map((v) => checker.check(v)));
-          const merged = mergeCheckResults(checkResults);
-          result = fixMode ? await checker.applyFixes(merged) : merged;
-        } else if (fixMode) {
-          // All-slices fix mode — prompt for confirmation unless --yes
-          const dryRunResults = await Promise.all(projectViews.map((v) => checker.checkAll(v)));
-          const dryRun = mergeCheckResults(dryRunResults);
-          const fixableCount = dryRun.findings.filter((f) => f.fixable).length;
-
-          if (fixableCount === 0) {
-            result = dryRun;
-          } else if (!opts.yes) {
-            printCheckOutput(dryRun, project.name, false);
-            const confirmed = await askConfirmation(
-              `\nFound ${fixableCount} fixable finding${fixableCount !== 1 ? 's' : ''}. Apply fixes? [y/N] `,
-            );
-            if (!confirmed) {
-              console.log('Aborted.');
-              return;
-            }
-            result = await checker.applyFixes(dryRun);
-          } else {
-            result = await checker.applyFixes(dryRun);
-          }
+        if (fixMode) {
+          const fixResult = await runRoutedFix({
+            project,
+            checker,
+            scope,
+            invokingPath,
+            // Only an explicit all-slices --fix previews and prompts; the
+            // workflow.auto_fix path skips both by design (slice 213 SC 11).
+            confirm: singleSlice === null && explicitFix && !opts.yes,
+            allSlices: singleSlice === null,
+            showWorktree,
+            commit: opts.commit !== false,
+          });
+          if (!fixResult) return;
+          result = fixResult;
         } else {
-          const checkResults = await Promise.all(projectViews.map((v) => checker.checkAll(v)));
-          result = mergeCheckResults(checkResults);
+          const checkResults = await runAttributed(scope.views, scope.runCheck);
+          result = mergeCheckResults(checkResults, invokingPath);
         }
 
         if (opts.json) {
@@ -199,48 +201,72 @@ export function registerCheckCommand(program: Command): void {
           return;
         }
 
-        printCheckOutput(result, project.name, fixMode);
+        printCheckOutput(result, project.name, fixMode, showWorktree);
       } catch (err) {
         handleError(err);
       }
     });
 }
 
-function printCheckOutput(
-  result: ConsistencyCheckResult,
-  projectName: string,
-  fixMode: boolean,
-): void {
-  const modeLabel = fixMode ? ' (fix mode)' : '';
-  console.log(label(`Consistency Check: ${projectName}${modeLabel}`));
-  console.log('');
+interface RoutedFixArgs {
+  project: ProjectData;
+  checker: ConsistencyChecker;
+  scope: CheckScope;
+  invokingPath: string | undefined;
+  /** Preview and prompt before writing. */
+  confirm: boolean;
+  allSlices: boolean;
+  showWorktree: boolean;
+  /** Commit fixes written into non-invoking checkouts. */
+  commit: boolean;
+}
 
-  if (result.totalFindings === 0) {
-    console.log('  No inconsistencies found');
-    return;
+/**
+ * Fix mode (slice 213): dry run per view, route each fix to the checkout that
+ * owns its subject, optionally preview and confirm, then apply. Returns null
+ * when nothing is applied (no fixable findings, or the user declined).
+ */
+async function runRoutedFix(args: RoutedFixArgs): Promise<ConsistencyFixResult | null> {
+  const { project, checker, scope, showWorktree } = args;
+  const multi = scope.views.length > 1;
+
+  // Routing needs to know which checkout is "here"; an unregistered one, or
+  // no projectPath at all, is a hard stop before anything is written (D5b, SC 12).
+  let invokingPath: string;
+  try {
+    invokingPath = await resolveFixInvokingPath(scope.views, args.invokingPath);
+  } catch (err) {
+    throw new UserError(err instanceof Error ? err.message : String(err));
   }
 
-  const fixRes = isFixResult(result) ? result : undefined;
-  const groups = groupFindings(result.findings);
+  const { dryRunResults, plan } = await planFixRun(project, scope, invokingPath);
 
-  for (const [key, findings] of groups) {
-    const groupLabel = key === 'project' ? 'Project-level' : `Slice ${key}`;
-    console.log(label(`  ${groupLabel}`));
-
-    for (const finding of findings) {
-      console.log(formatFinding(finding, fixRes));
+  if (args.allSlices) {
+    const dryRun = mergeCheckResults(dryRunResults, invokingPath);
+    const fixableCount = dryRun.findings.filter((f) => f.fixable).length;
+    if (fixableCount === 0) {
+      printCheckOutput(dryRun, project.name, false, showWorktree);
+      console.log(dim('No fixable findings — nothing to apply.'));
+      return null;
     }
-    console.log('');
-  }
-
-  if (fixRes) {
-    console.log(label(`Fixed ${fixRes.fixed} of ${result.totalFindings} findings`));
-    if (fixRes.fixErrors.length > 0) {
-      for (const err of fixRes.fixErrors) {
-        console.log(errorStyle(`  Fix error: ${err}`));
+    if (args.confirm) {
+      printCheckOutput(dryRun, project.name, false, showWorktree);
+      if (multi) {
+        printFixPlan(plan, args.commit);
+        if (plannedFixCount(plan) === 0) {
+          console.log(dim('Every fix is left alone — nothing to apply.'));
+          return null;
+        }
+      }
+      const prompt = multi
+        ? `\nApply ${plannedFixCount(plan)} fix(es) as planned? [y/N] `
+        : `\nFound ${fixableCount} fixable finding${fixableCount !== 1 ? 's' : ''}. Apply fixes? [y/N] `;
+      if (!(await askConfirmation(prompt))) {
+        console.log('Aborted.');
+        return null;
       }
     }
-  } else {
-    console.log(dim(result.summary));
   }
+
+  return applyFixPlan(checker, plan, { commit: args.commit });
 }

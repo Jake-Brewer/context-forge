@@ -4,15 +4,102 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { success, dim } from '../output/styles.js';
+import { STDOUT_SINK, type LogSink } from '../output/logSink.js';
+import { normalizeTarget, invalidTargetMessage, AGENT_SKILLS_DIR, type Target } from './ideTargets.js';
+import { UserError } from '../utils/errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/** Known command files managed by install/uninstall. */
-const MANAGED_FILES = [
-  'status.md', 'build.md', 'next.md', 'prompt.md', 'get.md', 'set.md', 'project.md', 'onboard.md', 'check.md',
-  'concept.md', 'initiatives.md', 'arch.md', 'plan.md', 'slice.md', 'tasks.md', 'implement.md',
-];
+/** Targets that receive command/skill delivery. `copilot`/`cursor` have no known mechanism yet. */
+export type CommandTarget = 'claude' | 'agents';
+
+export interface CommandTargetDescriptor {
+  /** Bundled asset subdirectory under commands/. */
+  sourceDir: string;
+  /** Project-relative install directory (--local scope). */
+  localDir: string;
+  /** Machine-level install directory (the default scope). */
+  globalDir: () => string;
+  /**
+   * Machine-level directory cf used to install into. Default-scope install and
+   * uninstall sweep cf's bundled entries out of it.
+   */
+  legacyGlobalDir?: () => string;
+  /** Install/prune strategy: flat .md files under cf/, or one directory per skill. */
+  layout: 'flat-md' | 'skill-dirs';
+  /** Maps a raw installed entry name to how the user invokes it. */
+  invocationHint: (entry: string) => string;
+  /** Noun used in messages ("commands" vs "skills"). */
+  noun: string;
+  label: string;
+}
+
+/**
+ * One entry per deliverable target — the `Record<CommandTarget, …>` annotation
+ * makes the compiler reject a CommandTarget without a descriptor.
+ */
+export const COMMAND_TARGETS: Record<CommandTarget, CommandTargetDescriptor> = {
+  claude: {
+    sourceDir: 'cf',
+    localDir: '.claude/commands',
+    globalDir: () => path.join(os.homedir(), '.claude', 'commands'),
+    layout: 'flat-md',
+    invocationHint: (entry) => '/cf:' + entry.replace(/\.md$/, ''),
+    noun: 'commands',
+    label: 'Claude Code',
+  },
+  agents: {
+    sourceDir: 'codex',
+    localDir: AGENT_SKILLS_DIR,
+    // Shared Agent Skills user root. Codex (codex-rs/ext/skills/src/host_roots.rs)
+    // treats $HOME/.agents/skills as the user root and $CODEX_HOME/skills as
+    // deprecated; squadron writes here too (slice 929 D1).
+    globalDir: () => path.join(os.homedir(), '.agents', 'skills'),
+    legacyGlobalDir: () => path.join(os.homedir(), '.codex', 'skills'),
+    layout: 'skill-dirs',
+    invocationHint: (entry) => '$' + entry,
+    noun: 'skills',
+    label: 'Codex',
+  },
+};
+
+function isCommandTarget(target: Target): target is CommandTarget {
+  return target in COMMAND_TARGETS;
+}
+
+/**
+ * Resolve user input ('claude', 'codex', 'openai', 'agents', …) to a deliverable
+ * command target. Throws UserError for unknown targets and for valid IDE targets
+ * with no command delivery (copilot, cursor) — an explicit error, not a no-op.
+ */
+export function resolveCommandTarget(input: string): CommandTarget {
+  const normalized = normalizeTarget(input);
+  if (!normalized) {
+    throw new UserError(invalidTargetMessage(input));
+  }
+  if (!isCommandTarget(normalized)) {
+    throw new UserError(
+      `No command delivery exists for target '${normalized}'. ` +
+        `Commands are available for: ${Object.keys(COMMAND_TARGETS).join(', ')} (aliases: codex, openai → agents).`,
+    );
+  }
+  return normalized;
+}
+
+export interface InstallScopeOptions {
+  /** Install to the project-local directory instead of the machine-level default. */
+  local?: boolean;
+  /** Explicit directory override — beats both scopes. */
+  targetDir?: string;
+}
+
+/** Resolve the install directory for a target and scope. Global (machine-level) is the default. */
+export function resolveInstallDir(target: CommandTarget, opts: InstallScopeOptions = {}): string {
+  if (opts.targetDir) return path.resolve(opts.targetDir);
+  const descriptor = COMMAND_TARGETS[target];
+  return opts.local ? path.resolve(process.cwd(), descriptor.localDir) : descriptor.globalDir();
+}
 
 /** Resolve the bundled commands/ directory relative to this script's location. */
 export function getSourceCommandsDir(): string {
@@ -27,85 +114,236 @@ export function getSourceCommandsDir(): string {
   return resolved;
 }
 
-/**
- * Copy command files from the bundled commands/cf/ directory to the target.
- * Creates directories as needed. Overwrites existing files (idempotent).
- *
- * @returns List of installed filenames.
- */
-export function installCommands(targetDir: string): string[] {
-  const sourceDir = path.join(getSourceCommandsDir(), 'cf');
-  const targetCfDir = path.join(targetDir, 'cf');
+export interface InstallResult {
+  installed: string[];
+  removed: string[];
+}
 
+/** flat-md layout: copy cf/*.md into targetDir/cf/, prune stale managed .md files. */
+function installFlatMd(sourceDir: string, targetDir: string): InstallResult {
+  const targetCfDir = path.join(targetDir, 'cf');
   fs.mkdirSync(targetCfDir, { recursive: true });
 
-  const files = fs.readdirSync(sourceDir).filter((f) => f.endsWith('.md'));
-  for (const file of files) {
+  const sourceFiles = new Set(fs.readdirSync(sourceDir).filter((f) => f.endsWith('.md')));
+  for (const file of sourceFiles) {
     fs.copyFileSync(path.join(sourceDir, file), path.join(targetCfDir, file));
   }
 
-  return files;
-}
-
-/**
- * Remove managed command files from the target.
- * Preserves user-added files. Removes the cf/ directory only if empty.
- * No error if files or directory don't exist (idempotent).
- *
- * @returns List of removed filenames.
- */
-export function uninstallCommands(targetDir: string): string[] {
-  const targetCfDir = path.join(targetDir, 'cf');
   const removed: string[] = [];
-
-  for (const file of MANAGED_FILES) {
-    const filePath = path.join(targetCfDir, file);
-    if (fs.existsSync(filePath)) {
-      fs.rmSync(filePath);
+  const targetFiles = fs.readdirSync(targetCfDir).filter((f) => f.endsWith('.md'));
+  for (const file of targetFiles) {
+    if (!sourceFiles.has(file)) {
+      fs.rmSync(path.join(targetCfDir, file));
       removed.push(file);
     }
   }
 
-  // Remove cf/ directory if it exists and is now empty
-  if (fs.existsSync(targetCfDir)) {
-    const remaining = fs.readdirSync(targetCfDir);
-    if (remaining.length === 0) {
+  return { installed: [...sourceFiles], removed };
+}
+
+/** Names of bundled skill directories (subdirectories containing a SKILL.md). */
+function bundledSkillNames(sourceDir: string): string[] {
+  return fs
+    .readdirSync(sourceDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(sourceDir, e.name, 'SKILL.md')))
+    .map((e) => e.name);
+}
+
+/**
+ * skill-dirs layout: copy each bundled skill directory into targetDir, then prune
+ * stale managed directories. "Managed" = `cf-` prefix AND contains a SKILL.md —
+ * the prefix marks CF ownership (the analogue of the cf/ subdirectory in the flat
+ * layout); the SKILL.md check keeps non-skill directories that merely share the
+ * prefix untouched. Other skills in the directory (e.g. the guide's workflow
+ * skills) are never touched.
+ */
+function installSkillDirs(sourceDir: string, targetDir: string): InstallResult {
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  const sourceSkills = new Set(bundledSkillNames(sourceDir));
+  for (const skill of sourceSkills) {
+    fs.cpSync(path.join(sourceDir, skill), path.join(targetDir, skill), { recursive: true });
+  }
+
+  const removed: string[] = [];
+  for (const entry of fs.readdirSync(targetDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('cf-') || sourceSkills.has(entry.name)) continue;
+    if (!fs.existsSync(path.join(targetDir, entry.name, 'SKILL.md'))) continue;
+    fs.rmSync(path.join(targetDir, entry.name), { recursive: true });
+    removed.push(entry.name);
+  }
+
+  return { installed: [...sourceSkills], removed };
+}
+
+/**
+ * Install a target's bundled command assets into targetDir (layout per descriptor).
+ * Creates directories as needed, overwrites existing files (idempotent), and
+ * removes stale managed entries no longer present in the source.
+ */
+export function installCommands(target: CommandTarget, targetDir: string): InstallResult {
+  const descriptor = COMMAND_TARGETS[target];
+  const sourceDir = path.join(getSourceCommandsDir(), descriptor.sourceDir);
+  return descriptor.layout === 'flat-md'
+    ? installFlatMd(sourceDir, targetDir)
+    : installSkillDirs(sourceDir, targetDir);
+}
+
+/**
+ * Remove managed command assets from the target.
+ * "Managed" = entries present in the bundled source for this target.
+ * Preserves user-added entries. flat-md removes cf/ if left empty; skill-dirs
+ * never removes the parent directory (it is shared with other skills).
+ * Idempotent — no error if files or directories don't exist.
+ */
+export function uninstallCommands(target: CommandTarget, targetDir: string): string[] {
+  const descriptor = COMMAND_TARGETS[target];
+  const sourceDir = path.join(getSourceCommandsDir(), descriptor.sourceDir);
+  const removed: string[] = [];
+
+  if (descriptor.layout === 'flat-md') {
+    const managedFiles = fs.readdirSync(sourceDir).filter((f) => f.endsWith('.md'));
+    const targetCfDir = path.join(targetDir, 'cf');
+    for (const file of managedFiles) {
+      const filePath = path.join(targetCfDir, file);
+      if (fs.existsSync(filePath)) {
+        fs.rmSync(filePath);
+        removed.push(file);
+      }
+    }
+    if (fs.existsSync(targetCfDir) && fs.readdirSync(targetCfDir).length === 0) {
       fs.rmdirSync(targetCfDir);
+    }
+  } else {
+    for (const skill of bundledSkillNames(sourceDir)) {
+      const skillDir = path.join(targetDir, skill);
+      if (fs.existsSync(skillDir)) {
+        fs.rmSync(skillDir, { recursive: true });
+        removed.push(skill);
+      }
     }
   }
 
   return removed;
 }
 
-/** Default target directory for command installation. */
-function defaultTarget(): string {
-  return path.join(os.homedir(), '.claude', 'commands');
+/**
+ * Remove cf's bundled entries from the target's legacy machine-level directory.
+ * Returns the removed names. No-op when the target has no legacy dir, the dir
+ * is missing, or it resolves to the same real directory as installDir (D3a).
+ * Errors propagate (D3b) — a partial sweep finishes on the next run.
+ */
+export function sweepLegacyGlobalDir(target: CommandTarget, installDir: string): string[] {
+  const legacyGlobalDir = COMMAND_TARGETS[target].legacyGlobalDir;
+  if (!legacyGlobalDir) return [];
+  const legacyDir = legacyGlobalDir();
+  if (!fs.existsSync(legacyDir)) return [];
+  if (fs.existsSync(installDir) && fs.realpathSync(legacyDir) === fs.realpathSync(installDir)) {
+    return [];
+  }
+  return uninstallCommands(target, legacyDir);
 }
 
-/** Install commands to the target directory (defaults to ~/.claude/commands). Errors propagate. */
-export function installCommandsAction(targetDir?: string): void {
-  const target = targetDir ?? defaultTarget();
-  const installed = installCommands(target);
-  console.log(success(`Installed ${installed.length} commands to ${target}/cf/`));
-  for (const file of installed) {
-    console.log(`  ${dim('/cf:' + file.replace('.md', ''))}`);
+function reportInstall(target: CommandTarget, dir: string, result: InstallResult, log: LogSink): void {
+  const descriptor = COMMAND_TARGETS[target];
+  const installedDir = descriptor.layout === 'flat-md' ? path.join(dir, 'cf') : dir;
+  log(success(`Installed ${result.installed.length} ${descriptor.noun} to ${installedDir} (${descriptor.label})`));
+  for (const entry of result.installed) {
+    log(`  ${dim(descriptor.invocationHint(entry))}`);
   }
+  if (result.removed.length > 0) {
+    log(
+      dim(
+        `Removed ${result.removed.length} stale ${descriptor.noun}: ${result.removed
+          .map((e) => descriptor.invocationHint(e))
+          .join(', ')}`,
+      ),
+    );
+  }
+}
+
+/** True when neither --local nor an explicit target dir is set (machine-level scope). */
+function isDefaultScope(opts: InstallScopeOptions): boolean {
+  return !opts.local && !opts.targetDir;
+}
+
+/** Sweep the legacy dir (default scope only) and print one line if anything was removed. */
+function sweepAndReportLegacy(target: CommandTarget, installDir: string, log: LogSink = STDOUT_SINK): string[] {
+  const removed = sweepLegacyGlobalDir(target, installDir);
+  const descriptor = COMMAND_TARGETS[target];
+  if (removed.length > 0 && descriptor.legacyGlobalDir) {
+    log(
+      dim(
+        `Removed ${removed.length} ${descriptor.noun} from legacy location ${descriptor.legacyGlobalDir()}: ` +
+          removed.map((e) => descriptor.invocationHint(e)).join(', '),
+      ),
+    );
+  }
+  return removed;
+}
+
+/**
+ * Install and report for an already-resolved command target. In the default
+ * scope, then sweeps the legacy machine-level dir. Errors propagate.
+ */
+export function installCommandsForTarget(
+  target: CommandTarget,
+  opts: InstallScopeOptions = {},
+  log: LogSink = STDOUT_SINK,
+): void {
+  const dir = resolveInstallDir(target, opts);
+  reportInstall(target, dir, installCommands(target, dir), log);
+  if (isDefaultScope(opts)) sweepAndReportLegacy(target, dir, log);
+}
+
+/** Install and report, resolving the target from user input. Errors propagate. */
+export function installCommandsAction(
+  ide: string = 'claude',
+  opts: InstallScopeOptions = {},
+  log: LogSink = STDOUT_SINK,
+): void {
+  installCommandsForTarget(resolveCommandTarget(ide), opts, log);
+}
+
+/**
+ * Uninstall and report, resolving the target from user input. In the default
+ * scope, also sweeps the legacy machine-level dir. Errors propagate.
+ */
+export function uninstallCommandsAction(ide: string = 'claude', opts: InstallScopeOptions = {}): void {
+  const target = resolveCommandTarget(ide);
+  const descriptor = COMMAND_TARGETS[target];
+  const dir = resolveInstallDir(target, opts);
+  const removed = uninstallCommands(target, dir);
+  if (removed.length > 0) {
+    console.log(success(`Removed ${removed.length} ${descriptor.noun} from ${dir}`));
+    for (const entry of removed) {
+      console.log(`  ${dim(descriptor.invocationHint(entry))}`);
+    }
+  }
+  const legacyRemoved = isDefaultScope(opts) ? sweepAndReportLegacy(target, dir) : [];
+  if (removed.length === 0 && legacyRemoved.length === 0) {
+    console.log(dim(`No ${descriptor.noun} found to remove.`));
+  }
+}
+
+interface InstallCliOptions {
+  ide: string;
+  local?: boolean;
+  target?: string;
 }
 
 export function registerInstallCommandsCommand(program: Command): void {
   program
     .command('install-commands')
-    .description('Install Claude Code slash commands for Context Forge')
-    .option('--target <dir>', 'Target directory', defaultTarget())
-    .action((opts: { target: string }) => {
+    .description('Install Context Forge slash commands (Claude Code) or agent skills (Codex)')
+    .option('--ide <target>', 'IDE target: claude, agents (aliases: openai, codex)', 'claude')
+    .option('--local', 'Install to the project-local directory instead of machine-level')
+    .option('--target <dir>', 'Explicit target directory (overrides --ide/--local resolution)')
+    .action((opts: InstallCliOptions) => {
       try {
-        const installed = installCommands(opts.target);
-        console.log(success(`Installed ${installed.length} commands to ${opts.target}/cf/`));
-        for (const file of installed) {
-          console.log(`  ${dim('/cf:' + file.replace('.md', ''))}`);
-        }
+        installCommandsAction(opts.ide, { local: opts.local, targetDir: opts.target });
       } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
     });
@@ -114,21 +352,15 @@ export function registerInstallCommandsCommand(program: Command): void {
 export function registerUninstallCommandsCommand(program: Command): void {
   program
     .command('uninstall-commands')
-    .description('Remove Claude Code slash commands for Context Forge')
-    .option('--target <dir>', 'Target directory', defaultTarget())
-    .action((opts: { target: string }) => {
+    .description('Remove Context Forge slash commands (Claude Code) or agent skills (Codex)')
+    .option('--ide <target>', 'IDE target: claude, agents (aliases: openai, codex)', 'claude')
+    .option('--local', 'Uninstall from the project-local directory instead of machine-level')
+    .option('--target <dir>', 'Explicit target directory (overrides --ide/--local resolution)')
+    .action((opts: InstallCliOptions) => {
       try {
-        const removed = uninstallCommands(opts.target);
-        if (removed.length === 0) {
-          console.log(dim('No commands found to remove.'));
-        } else {
-          console.log(success(`Removed ${removed.length} commands from ${opts.target}/cf/`));
-          for (const file of removed) {
-            console.log(`  ${dim('/cf:' + file.replace('.md', ''))}`);
-          }
-        }
+        uninstallCommandsAction(opts.ide, { local: opts.local, targetDir: opts.target });
       } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
     });

@@ -5,12 +5,712 @@ scope: project-wide
 
 # Changelog
 
-All notable changes to Context Forge will be documented in this file.
+All notable changes to Context Forge will be documented in this file.  This file should contain concise entries from user point of view and should answer the following questions:
+* What can I do now that I couldn't do before?
+* What specific bugs, if any, are fixed?
+* Were any features removed?
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.19.26] - 20261107
+
+### Added
+- `cf devlog archive [--dry-run]` moves older `DEVLOG.md` day sections into quarterly archives at `project-documents/user/archive/devlog/DEVLOG-YYYY-Qn.md` once the file passes `devlog.max_bytes`, keeping the newest sections up to `devlog.target_bytes` (defaults 200000 and 100000). Fixes #141.
+- `cf check` and `workflow_check` warn when `DEVLOG.md` is over the limit (`devlog-size`); `--fix` archives it in the main checkout and commits when that checkout is not the one you run from.
+
+## [0.19.25] - 20261103
+
+### Fixed
+
+- `cf setup-ide` no longer waits on GitHub: it read the guide's latest tag over the network on every run, which was nearly all of its runtime. `cf guides install/update/uninstall` and worktree sync skip that lookup too; `cf guides update` now lists remote tags once instead of twice. `cf guides info` still shows the latest version.
+
+## [0.19.24] - 20261101
+
+### Added
+
+- `cf check --fix --no-commit` (MCP `workflow_check` with `noCommit: true`) writes fixes in every checkout without committing them in other worktrees, leaving the written files for the caller to commit. Plain `--fix` and `workflow.auto_fix` behave as before.
+
+## [0.19.23] - 20261029
+
+### Added
+
+- `cf build --embed` now inlines the project's docs map, and the registered comprehension doc when it is at most `embed.comprehension_max_chars` characters (default 20000, `0` never inlines it). A longer doc is replaced by a one-line note naming its path (#139).
+
+### Fixed
+
+- `cf prompt get <full-key>` now resolves a full prompt key instead of failing (#136).
+- `cf list arch` shows deprecated and deferred initiatives as such; `Status: deprecated` and `Status: deferred` are read from the plan line (#140).
+- A slice plan that cannot be read (permissions, etc.) now raises an error instead of being treated as empty; a missing file still means no plan (#131).
+
+## [0.19.22] - 20261029
+
+### Added
+
+- `cf set comprehension <path>` (and MCP `project_update` with `fileComprehension`) registers the codebase comprehension doc. The path must be an existing file inside the project; it is stored relative to the project root, and `""` clears it. Squadron calls it after `sq onboard`.
+- Architecture, slice planning and slice design builds (`cf build`, `context_build`) include a `### Codebase Reference` section naming the registered comprehension doc and the docs map. The docs map is reported as `current` or `out of date`, a deleted comprehension doc as `missing`, and the section never fails the build. It needs ai-project-guide v0.22.11 or newer, which lists the new variables in those phases' profiles.
+
+### Changed
+
+- `cf build brownfield-adoption` now ends its project context with one `Codebase comprehension:` line, because the guide's adoption profile already lists `fileComprehension`. The adoption prompt itself still takes the doc path only from `--comprehension`.
+- The minimum ai-project-guide version is now v0.22.11.
+
+## [0.19.21] - 20261027
+
+### Fixed
+
+- `cf next` and `cf list slices` register the derived architecture, slice plan and concept after a completed adoption, so `cf next` no longer says "Create architecture document" for an adopted project (#137). With several derived architectures it names them and does not guess.
+- The "No slice plan configured" error now names the real command, `cf set plan <path>`, instead of `cf set slicePlan`.
+- The architecture review gate message no longer says "before creating the slice plan" when the plan exists, and now names where the review file goes and how to turn reviews off (`cf config set workflow.review_enabled false`) (#132).
+- `cf init`: a `.gitignore` write failure is now reported as a failed `gitignore` step (exit 1, later steps still run) instead of aborting init with an internal error after the project was registered.
+
+## [0.19.20] - 20261026
+
+### Added
+
+- **`cf prompt get` warns on stderr when the installed ai-project-guide is older than the minimum** (now v0.22.8), the same warning `cf build` gives. It also prints with `--raw`; stdout is unchanged.
+- **`docs/ADOPTION-PRIMITIVES.md`** documents the `cf detect`, `cf init --json` and `cf prompt get --path/--comprehension` contract that `sq onboard` consumes.
+- **`cf detect` and the `project_detect` MCP tool** report what a directory holds and which adoption outcome applies (`opted-out`, `adoption-incomplete`, `already-planned`, `brownfield`, `greenfield`): source volume, git history, docs, ADRs, CI, rule files, and the concept, derived architecture and existing-state plan paths. Read-only, works on unregistered projects, and `--json` output matches the MCP result byte for byte. Failures are one JSON error object with a stable code, on stdout with exit 1.
+- **`cf init --json`** prints one JSON object with the project id and each setup step's result (`git`, `register`, `gitignore`, `guides`, `commands`, `ide`: `ok`, `skipped` or `failed`). Progress goes to stderr, so stdout stays machine-readable.
+- **`cf prompt get --path <dir>`** renders a prompt for the registered project at that directory. **`--comprehension <path>`** names a codebase comprehension file; for prompts whose guide profile lists `fileComprehension`, the output gains an `## Adoption Inputs` section listing it with the project's concept, derived architecture and existing-state plan.
+- **`cf init` prints one line for an existing codebase** (or an incomplete adoption), the same line `cf next` shows.
+
+### Changed
+
+- **Minimum ai-project-guide is now v0.22.8**, which carries the reworked brownfield-adoption prompt. Run `cf guides update` if you see the warning.
+- **`cf init` now exits 1 when a setup step fails** (git init, guide install, command install or IDE setup). Before, a failed step printed a warning and exited 0. The remaining steps still run, and an already-installed guide is not a failure.
+- **Onboarding (`/cf:onboard`, the Codex skill and `agent_onboard`) stops on an existing codebase.** After setup it checks the directory and, on `brownfield` or `adoption-incomplete`, prints the detection notices and stops instead of starting a concept conversation.
+- **`cf build`, `context_build` and `template_preview` are pure.** They assemble context and write nothing. They no longer read or write `adoption.state`, run `sq probe`, or add Adoption Facts or a `Comprehension:` line to the prompt. Phase 0 always builds the concept prompt, even in a brownfield project. An explicit `--it brownfield-adoption` still renders that prompt, without facts.
+- **`adoption.state` is now only the opt-out.** Set it to `declined` to treat a project as new; empty (the default) lets cf decide from the project's files. Adoption progress is derived from the files every time: a derived architecture (`provenance: derived`) with no retroactive slice plan is an incomplete adoption, and a retroactive plan means the project is adopted. The old values `in_progress` and `complete` are ignored, never an error; `cf next` and `workflow_next` show a notice until you run `cf config unset adoption.state`. `cf config set` no longer accepts them.
+- **`cf next` / `workflow_next` give one line for adoption instead of adoption steps.** An unadopted brownfield repo gets a warning pointing at `sq onboard`, and so does an incomplete adoption. Navigation otherwise proceeds as for any project, and never recommends `cf build` for adoption. An adopted project is navigated to its first unbuilt slice. If cf can't measure the source tree, `cf next` still succeeds and says why.
+
+### Removed
+
+- The codebase-comprehension file lookup in cf. Squadron passes the path in; cf never names squadron's files or runs `sq`, and a test guards that.
+- Build-time brownfield adoption: the resolver, the facts renderer, the completion handling, the `adoption.state` writer and the squadron probe. Adoption moves to `sq onboard`.
+- Per-step adoption guidance in `cf next` (concept, architecture, existing-state plan, record completion, register plan).
+
+## [0.19.19] - 20261025
+
+### Added
+
+- **Agent-scoped guide rules (#123).** `cf setup-ide` honors an `agents: [claude]` marker in a guide rule's frontmatter. A marked rule reaches only the listed outputs: `claude` (CLAUDE.md, `.claude/rules/`), `agents` (AGENTS.md), `copilot` (copilot-instructions.md, `.github/instructions/`), and `cursor` (`.cursor/rules/`). Without the key, a rule goes everywhere, as before. A scoped file an earlier run wrote for a now-skipped rule is removed. An unknown value is ignored with a warning. Rule resolutions render only in the blocks their rule reaches, and `cf rules inventory --json` reports each rule's `agents`.
+
+### Fixed
+
+- **`cf init` in a subfolder of a repository** no longer runs `git init` there, so adoption detection sees the enclosing repository's history and CI (#133).
+
+### Changed
+
+- **Minimum ai-project-guide is now v0.22.6**, the release that carries the `conventions-reconciliation` prompt (`cf prompt get conventions-reconciliation`) and runs `cf docs map` during brownfield adoption. On an older guide, `cf build` warns; `cf guides update` fixes it.
+
+## [0.19.18] - 20261024
+
+### Added
+
+- **Squadron probe in Adoption Facts.** On a brownfield build, cf runs `sq probe --json` in the checkout and, when `probe_version` is supported, appends its JSON and any stderr warnings to the Adoption Facts; otherwise it states "Squadron: unavailable" with the reason (not installed, non-zero exit, timeout, unreadable output, unsupported version). It also resolves `fileComprehension` to squadron's newest codebase-comprehension analysis when one exists. `context_build` accepts a `squadron` probe option, matching the CLI.
+- **Retroactive slice plan entries.** A slice plan entry written `N. [x] **(NNN) Title** `retroactive` — description` records work that predates adoption. It counts as complete, the review gate skips it (reported as one info per plan, never as reviewed or exempt), and it is never offered as the next slice. `cf list slices` shows `✓ retroactive`, `cf list slices --json` and the active-slice status carry `retroactive`. A new `retroactive-entry` check flags a marked entry that has a slice design or task file, is unchecked, or is indexed after new work. Architecture documents accept `provenance: derived`.
+- **`cf next` and `workflow_next` follow adoption.** During an in-progress adoption at Phase 0 they name the next step (concept, architecture, existing-state slice plan, then "run `cf build` to record adoption as complete"), always with `cf build`, so following them no longer advances the phase out of adoption. Once adoption is complete they ask you to register the derived architecture and slice plan, then point at the first new (non-retroactive) slice, or at slice planning if the plan holds only recorded history. With `adoption.state` unset, a Phase 0 project that has a concept but no planning artifact keeps today's advice plus a warning to run `cf build` first (silence it with `cf config set adoption.state declined`); an in-progress adoption outside Phase 0 gets a warning with the way back. `cf next` stays read-only. An out-of-range `adoption.state` is reported as an error on both surfaces. When any warning applies, `cf next` now shows it on the architecture and slice-plan prompts too, not only on the final fall-through.
+- **Conventions reconciliation for adopted projects.** When a project's own rules (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, ...) disagree with the guide's, record the decision instead of leaving both in the agent's context. `cf rules inventory --json` lists the guide's rules, the project's own rule sources (with the managed-block line range of composite files) and stored resolutions; `cf rules resolve <guideRule> <projectSource> --statement "<text>"` records a decision in `.context-forge/rule-resolutions.json`. Every `setup-ide` run renders the live resolutions as a `## Project Rule Resolutions` section at the end of each managed block (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`), so re-runs and guide upgrades keep them. A resolution is keyed by the file pair, not rule text. Without a resolutions file the output is unchanged; a malformed file fails before anything is written; a resolution naming a missing guide rule or project file warns and is not rendered. Precedence is advisory: the conflicting guide text stays in place. The comparison is done by the agent through the guide's `conventions-reconciliation` prompt (`cf prompt get conventions-reconciliation`), which needs the guide release that carries it. `.github/instructions` now counts as a rule file in the Adoption Facts.
+- **Adoption completes itself.** When an in-progress adoption's project has a slice plan with a retroactive entry, the next persisting `cf build` records `adoption.state = complete` and shows a notice naming the plan. `template_preview` and an explicit `brownfield-adoption` instruction never complete it.
+- **`cf docs map` indexes an adopted project's existing docs.** Writes `project-documents/user/architecture/050-docs-map.{project}.md` (`docType: reference`), linking the project's README, `docs/` Markdown files and ADRs in place with their first heading as the link text; nothing is moved or modified. The list sits in a `<!-- BEGIN:cf-docs-map -->` block that is regenerated on each run; everything outside it, frontmatter included, is kept byte for byte. A second run reports `unchanged`; a missing or broken block fails with the file named and nothing written. Symlinks are listed as skipped, not followed. `cf check` reports nothing for links that leave `project-documents/`, and the map does not count as a planning artifact.
+
+## [0.19.17] - 20261021
+
+### Added
+
+- **`cf build` recognizes an existing codebase.** On a Phase 0 build, a project with at least 2000 non-blank source lines and no initiative plan, architecture, HLD or slice plan gets the guide's brownfield-adoption prompt, followed by an `### Adoption Facts` section (source volume, history, docs, ADRs, rule files, CI). The first detection records `adoption.state = in_progress`, so later builds keep resuming the brownfield prompt. Override with `cf config set adoption.state in_progress` (force), `declined` (treat as new) or `""` (re-detect). `template_preview` never writes the state. A guide without the brownfield profile or prompt fails the build with a named error instead of falling back to the concept prompt. Needs ai-project-guide v0.22.2+.
+
+- **`cf next` offers CI setup.** When a project has a build manifest (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, and others) but no recognized CI and no release skill, `cf next` and `workflow_next` add an `offers` entry (id `setup-ci`) pointing at the setup-ci skill. CI is recognized under GitHub Actions (any workflow file), GitLab, CircleCI, Azure Pipelines, Bitbucket, Jenkins, Travis and Buildkite, in the project folder or its repository root. Stop the offer with `cf config set workflow.setup_ci_offer false`.
+- **Old-guide warning.** `cf build` (stderr) and `context_build` (a second text item) now warn when the installed ai-project-guide is older than v0.22.2 or its version is unknown, and name `cf guides update`. The build still succeeds.
+
+### Changed
+
+- **One onboarding recipe.** `/cf:onboard`, the `cf-onboard` Codex skill and the `agent_onboard` MCP tool now render from a single source. Onboarding is setup, then a handoff to `cf build` / `context_build`; the guide's concept prompt starts the conversation, and the CI offer moved to `cf next`.
+
+### Fixed
+
+- **Onboarding named the project wrongly.** The recipe told agents to run `cf init <name>`, but `cf init` takes `--name <name>`; it now says so.
+
+## [0.19.16] - 20261019
+
+### Added
+
+- **Choose how readily AI work waits on you.** A new shared setting, `workflow.permissiveness` (`cautious` | `standard` | `autonomous`, default `standard`), makes `cf build` and the MCP `context_build` tool add the guide's matching wording (`project-guides/rules/permissiveness/<level>.md`, guide v0.21.9 or later) right after the instruction prompt in Phases 4–6. `autonomous` tells the AI not to invent confirmation steps and to use a `BLOCKED:` line for real stops; `cautious` waits readily. `standard` changes nothing. A change applies at the next build, with no `cf setup-ide` step. If the configured level's file is missing or empty the build fails and names the path; run `cf guides update` (#122)
+
+### Fixed
+
+- **Install hints name the right command.** The missing-prompt-file error and the `prompt_list` / `prompt_get` tool descriptions said `cf guide install`; the command is `cf guides install`.
+
+## [0.19.15] - 20261018
+
+### Fixed
+
+- **`cf next` no longer asks for a concept that already exists.** In Phase 0 it only recognised a concept registered in the project's `fileConcept` field, which nothing sets automatically, so a `000-concept.*.md` already in `project-guides/` still got "describe what you want to build". It now finds the concept file on disk, the same way it finds the initiative plan, and advises advancing to Phase 1.
+
+## [0.19.14] - 20261018
+
+### Added
+
+- **Pending PM decisions block a slice design.** A slice design whose decision status line says `pending-pm` (or `tbd`, `undecided`, `open`, `pending`) now fails `cf validate design`, which names each decision and its line. `cf next` and `cf status` report a new `pending-decision` status for the slice and the MCP `workflow_next` / `workflow_status` tools do the same, with the decisions listed under `pendingDecisions` in `--json`. `cf check` adds a `pending-decision` warning. It is on by default and designs with no status lines are unaffected; set `workflow.decision_gate_enabled` to `false` to turn it off everywhere. A value other than `true` or `false` is an error (#121)
+
+## [0.19.13] - 20261016
+
+### Changed
+
+- **`/cf:onboard` suggests `/setup-ci`.** Once a new project has code and a detectable stack but no CI workflow or release skill, onboarding offers the guide's `setup-ci` skill once. The same text is in the Codex onboard skill and the `agent_onboard` MCP tool
+
+## [0.19.11] - 20261014
+
+### Added
+
+- **Warning when a checkout is behind its upstream.** `cf next`, `cf status`, `cf list slices`, `cf list tasks` and `cf check` now say when the checkout they read from trails its upstream (e.g. `trading-data-maintenance is 16 commits behind origin/main; artifact lists may be incomplete`), so a stale list is no longer a silent surprise. Local only: it uses the last fetch, never touches the network, and stays quiet for repos with no upstream. `list` and `check` print it on stderr; `next` and `status` show it with their other warnings; `next`, `status` and `list slices` include it in `warnings` in `--json`, and the `workflow_next` and `workflow_status` MCP tools do the same (#104)
+
+### Changed
+
+- **Clearer setup-ide hint for a weak TypeScript ESLint config.** The fix is now numbered in working order (run `--write-lint` to create `required-rules.mjs`, then add the import), with the new-lint-errors note last
+
+## [0.19.10] - 20261014
+
+### Added
+
+- **`cf setup-ide --force` replaces rule files setup-ide would otherwise skip.** Unmanaged files and files edited since install are overwritten with the guide's version. Each replaced file is saved once as `<name>.pre-context-forge`, and the new file is recorded in the install manifest so later runs manage it normally. Works with `--dry-run` (#120)
+
+## [0.19.9] - 20261014
+
+### Added
+
+- **Built context carries the branch work targets.** New template variables `integrationBranch` (the configured `git.integration_branch`, empty when unset) and `targetBranch` (that branch, or `main`), resolved per checkout so each worktree gets its own. The guide's system prompt can state the merge target directly instead of asking the agent to look it up (#70)
+
+### Fixed
+
+- **`cf next` and `cf status` no longer follow a cancelled slice.** A current slice that is deprecated or deferred is reported as no active slice, with a warning, and `cf next` moves on to the next real one (#117)
+- **Plan entries with a bold prefix keep their index.** `**DEPRECATED (date)** **(121) Name**` now parses as slice 121, not slice 1 (#117)
+- **`cf config get` truncates long values** to the terminal width. Piped output and `--value` stay whole (#118)
+- **Tarball guide uninstall commits the removal** (`docs: uninstall ai-project-guide <version>`), as install already commits the guide, so a reinstall of the same version shows up as a change (#119)
+
+## [0.19.8] - 20261013
+
+### Changed
+
+- **`cf setup-ide` helps fix a weak ESLint flat config.** When an existing `eslint.config.*` lacks the guide's required rules, it prints the import and spread to add, warns that new lint errors will follow, and with `--write-lint` copies the guide's `required-rules.mjs` into the project. The config itself is never edited, and an existing `required-rules.mjs` is kept (#115)
+
+### Fixed
+
+- `cf guides install` no longer says "not a git repository, or the guide path is gitignored" when the guide simply matches what is already committed, such as a reinstall of the same version
+- The Claude Code setup note no longer names a hardcoded "(general, git)" rule list
+
+## [0.19.7] - 20261013
+
+### Changed
+
+- **Bundled ai-project-guide updated to v0.20.11.** The guide drops its `scripts/` folder (cf has done its own installs and design validation since 0.19.6) and adds a Fixes workflow section to the rules `cf setup-ide` installs
+
+## [0.19.6] - 20261013
+
+### Added
+
+- **`cf validate design <file...>`** checks Phase 4 slice designs for every section the guide's slice-design template marks required, printing `PASS`/`FAIL` per file with each missing heading named. Exit 0 all pass, 1 any fail, 2 usage or template error; `--json` and `--project` supported. It replaces the guide's `scripts/validate-slice-design`, which the guide drops as it goes docs-only. Also accepts a quoted `docType` and CRLF files, which the script rejected
+
+### Changed
+
+- **`cf setup-ide` installs IDE files itself.** It no longer runs the guide's bash `setup-ide` script, so bash is no longer needed. Its output matches the script's byte for byte on the current guide for all four targets, apart from the two fixes below. Worktrees are installed the same way from the main checkout's guide, each with its own `rules.exclude`. The command, targets, aliases and flags are unchanged. A file setup-ide has never managed is backed up once to `<name>.pre-context-forge`; cf no longer also writes a `.bak`. A dry run's sandbox is now removed even when the install fails
+
+### Fixed
+
+- A scoped rule with no `paths:` no longer gets a broken two-line `applyTo: "**` / `**"` in its Copilot instruction file, or a split `Applies to` line in AGENTS.md (#40)
+- Replacing the managed block in CLAUDE.md or AGENTS.md no longer adds a final newline the file did not have (#38)
+
+### Removed
+
+- The `CONTEXT_FORGE_RULES_EXCLUDE` environment variable no longer overrides `rules.exclude`; set it with `cf config set rules.exclude`
+
+## [0.19.5] - 20261010
+
+### Changed
+
+- **Bundled ai-project-guide updated to v0.20.4.** The P6 prompt now uses `{task-files}`, so a split tasks file lists every part (needs `cf` 0.19.4 or later; #114). Phase 6 wording in the process guide notes a pipeline run may span Phases 6 and 7 when the engine controls review and merge
+
+## [0.19.4] - 20261010
+
+### Added
+
+- **`{task-files}` template variable** lists the slice's real task files found on disk: one path, or every part (`-1`, `-2`, ...) in numeric order, comma-separated, when the tasks file is split. It stays as literal `{task-files}` when no task file exists. Guide prompts can use it in place of the hard-coded `{sliceindex}-tasks.{slicename}.md` name (#114)
+
+### Fixed
+
+- **Diagnostics from the storage layer go to stderr**, so they no longer corrupt the MCP stdio stream (#113)
+
+## [0.19.3] - 20261007
+
+### Added
+
+- **`cf worktree list` tags the default worktree `(default)`**, and every worktree in `--json` and the MCP tools carries `isDefault`. `cf worktree rm` and the MCP `worktree_rm` result name the default worktree (`defaultWorktree { id, name }`) (#112)
+
+### Fixed
+
+- **The default worktree is found by a stored `isDefault` marker, not by its name.** Before, a worktree you named `Default` had its range narrowed and widened, and renaming the real default turned both off. Renaming now changes nothing, and `cf worktree init --name default` makes an ordinary worktree. Existing projects get the marker on first read, with no write until the next normal save; if the old data is ambiguous (several candidates, or a probable renamed default) nothing is marked and a stderr warning says how to fix `projects.json` by hand. Two worktrees marked default is an error where ranges change (#112)
+
+- **Removing a worktree gives its index range back to the `default` worktree** when the two ranges border each other, undoing the narrowing that adding it caused. When it can't (the default is pinned with a range override, the ranges don't touch, or the combined range would overlap another worktree), `cf worktree rm` says so and shows how to widen the range by hand. MCP `worktree_rm` returns `restoredRange` or `rangeNotRestored` (#76)
+
+## [0.19.2] - 20261007
+
+### Added
+
+- **`cf guides update` previews the change before replacing the guide** (tarball installs): it prints `N added, N removed, N changed` for the new version and asks to continue. `--yes` skips the question; a closed stdin declines. An update with no differences says so and changes nothing. The `guide_update` MCP tool returns the same counts as `preview` (#110)
+- **`--version <tag>` on `cf guides install` and `cf guides update`** (and `version` on the MCP tools) installs a specific release instead of the newest; a missing tag fails and names the newest one (#93)
+- **`--source <path.tgz>` installs from a local guide archive**, for offline or air-gapped use. It is recorded as version `local`, `cf guides info` reports an update as available, and a later plain update moves to the latest release. Using `--version` or a local `--source` on a submodule or clone install is an error (#93)
+
+### Fixed
+
+- **`guide.exclude` can now skip a single language's lint config**, e.g. `project-guides/lint/csharp`; it was refused along with all of `project-guides`. `project-guides/lint` itself and the rest of `project-guides` and `scripts` stay protected, and the error says which rule applied (#111)
+- **A `guide.exclude` change now lands in the same commit as the re-extract it caused**: `.context-forge.toml` is included when `guide.exclude` is its only uncommitted change, so the tree is left clean. With other edits in it, the file is left out and cf says so (#111)
+- **A guide installed from a local archive no longer shows as up to date forever**: its `local` version now counts as older than any release
+
+## [0.19.1] - 20261006
+
+### Added
+
+- **`cf config get <key> --value`** prints only the bare value (an empty line when unset), for scripts. Exits 2 for an unknown key and 1 for any other error. The guide's setup-ide uses it to read `rules.exclude`
+- **`cf setup-ide <target> --dry-run`** previews the files the guide's setup-ide would add, change, or remove, and writes nothing: no overwrite prompt, no `.bak` backups, no worktree changes, no global command install. Needs guide v0.20.0+; with an older guide cf refuses and points at `cf guides update` instead of running a real install
+- **`cf setup-ide <target> --write-lint`** passes through to the guide's setup-ide, which writes the missing lint configs it reports for the project's languages (`ruff.toml`, `eslint.config.mjs`, `analysis_options.yaml`, `.editorconfig`, `Directory.Build.props`). Combine with `--dry-run` to preview them. Needs guide v0.20.0+; refused on older guides the same way
+
+### Changed
+
+- **The repo now has working lint**: `pnpm lint` runs ESLint (typescript-eslint, type-checked) across all packages, and a CI workflow runs build, typecheck, lint and test. Fixed the 54 errors it found, mostly missing `cause` on rethrown errors and needless `async` (#109)
+- **`cf setup-ide` with guide v0.20.1+ runs the guide in each registered worktree** (`setup-ide --root <worktree>`, using the main checkout's guide files) instead of copying the main checkout's output and pruning it. Each worktree gets the guide's own install, cleanup, edited-file protection, and lint checks, and `--dry-run` now previews worktrees too. A failing worktree no longer stops the others; the command reports which ones failed. Older guides keep the previous copy-and-prune behavior
+- **cf no longer writes `.bak` copies of CLAUDE.md / AGENTS.md / copilot-instructions.md with guide v0.20.1+**, which backs them up itself to `<name>.pre-context-forge`. The overwrite prompt stays. Flag support is read from `setup-ide --capabilities` instead of searching the script
+
+## [0.19.0] - 20261005
+
+### Changed
+
+- **`cf check --fix` with worktrees now writes each fix once, in the checkout that owns it.** Ownership follows the worktrees' index ranges; unclaimed documents belong to the main project checkout. Fixes in the checkout you run from stay uncommitted. Fixes in another checkout are committed there, scoped to the fixed files, with `docs: update project documents in response to cf check --fix`, and never pushed. Stale copies, unsafe checkouts (missing, detached HEAD, mid-merge/rebase, or a git check that fails or times out), files with uncommitted edits, and commits rejected by hooks are left alone and listed with a reason. Before, `--fix` rewrote every checkout that had the finding and left the edits uncommitted. With two or more worktrees, `fixed` and `fixLog` now count only the writes made, so they can be smaller than in 0.18.x for the same tree. MCP `workflow_check` (`fix: true`) routes the same way and now treats the server's working directory as the invoking checkout
+- **`--fix` from a checkout that isn't a registered worktree is now an error** when the project has two or more checkouts. Nothing is written. Read-only `cf check` is unaffected
+- **`workflow.auto_fix` no longer asks for confirmation.** A plain `cf check` with the key set applies fixes directly, so with worktrees it can commit into other checkouts. An explicit `cf check --fix` still asks unless `--yes`
+
+### Added
+
+- **`cf check --fix --json` and MCP `workflow_check` report where fixes went:** `deferred[]` (each unwritten fix with a `reason` and, for a stale copy, the `owner`), `commits[]` (`sha`, `checkoutPath`, `files`), and `fixLog[].worktree`. With one checkout, `deferred` and `commits` are always empty. Text output groups fixes by checkout and lists what was left alone
+
+### Removed
+
+- **`ConsistencyChecker.fix()` and `fixAll()` (`@context-forge/core`).** They wrote fixes without worktree routing. Use `planRoutedFixes` + `applyFixPlan`, or `applyFixes(await checker.check(project))` for a single checkout
+
+## [0.18.4] - 20261004
+
+### Added
+
+- **New `guide.exclude` config key: tarball guide installs can leave out guide content you don't use.** It takes comma-separated guide-relative paths (e.g. `cf config set guide.exclude "tool-guides/**,framework-guides"`). A trailing `/` or `/**` means the same as the bare path; other wildcards are refused. `project-guides` and `scripts` are protected, because cf needs them. Changing the key takes effect on the next `cf guides update`, which re-extracts at the same version and commits as `docs: re-extract ai-project-guide <version> (guide.exclude changed)`. The applied list is recorded in `.context-forge-guide-exclude` inside the guide. `cf guides info` (and MCP `guide_status`) shows the applied list and flags a pending change. A pattern that matches nothing is reported as a warning. Submodule and clone installs ignore the key and say so
+
+### Fixed
+
+- **A failed tarball guide update no longer leaves the project without a guide.** Install and update now extract into a staging directory and swap it into place only once the download and extract succeed. Before, update deleted the guide first, so a network error, rate limit, or broken archive left nothing behind
+
+- **`cf setup-ide` now removes files the guide no longer installs from registered worktrees.** Worktrees used to keep every rule, agent, or skill the guide dropped, forever. A worktree file is deleted only when its bytes still match what the guide wrote; a file you edited is kept and named in a warning. The guide's install manifest (`.context-forge/<target>.manifest`) is now copied into each worktree so the next run has a baseline. For copilot, stale generated `.github/prompts/*.prompt.md` files are swept from worktrees too. With a guide older than v0.19.0, worktrees are copied but not pruned, and one notice says so (#103)
+- **Answering "no" at the `cf setup-ide` overwrite prompt no longer touches worktrees.** Propagation and command install used to run anyway
+
+## [0.18.3] - 20261003
+
+### Fixed
+
+- **Machine-level Codex skills now install to `~/.agents/skills`**, the shared Agent Skills location. Codex marks `~/.codex/skills` as deprecated, and squadron already writes to `~/.agents/skills`, so the old path left two copies of every skill. The next default-scope `cf install-commands --ide codex`, `cf setup-ide codex`, or `cf init --ide codex` removes cf's own skills from the legacy `~/.codex/skills` and reports what it removed. Other skills there are left alone. `cf uninstall-commands --ide codex` cleans both locations (#99)
+- **`cf setup-ide copilot` now propagates `.agents/skills/` to worktrees**, where the guide writes copilot skills. Worktrees used to get only `.github/instructions` and `.github/prompts` (#102)
+
+## [0.18.2] - 20261001
+
+### Added
+
+- **New `workflow.review_weak_pass_as` config key** (`pass` | `concerns` | `fail`, default `pass`). A PASS whose review reports weak provenance — squadron's `verdictSource: derived` (the verdict was rebuilt from finding severities) or `recoveryTurn: true` (the verdict came only on a second prompt) — can now be evaluated as CONCERNS or FAIL instead of trusted as PASS. Each part of a split review is judged separately. The default changes nothing (#89, #105)
+- **`cf check` now reports weak-provenance clears** as an `info` finding naming the review and why its PASS is weak, while the slice is still open. You see a rebuilt or recovered PASS even at the default config (#89, #105)
+- **Review exemptions are now visible.** A slice that declares `review: none` gets an `info` finding in `cf check` while its plan entry is open, and `cf next` / MCP `workflow_next` append `(review gate skipped: slice declares review: none)` to the rationale at every stage. Exemptions no longer hide behind a normal-looking recommendation (#83)
+
+### Changed
+
+- **`cf check --set-review-none` now asks before writing.** It prints the slice design path and what the waiver skips, then prompts `Proceed? [y/N]`. Declining writes nothing. **Scripts and agents must now pass `--yes`**: without it, a non-interactive shell or `--json` run exits with an error instead of writing (#83)
+
+### Fixed
+
+- `cf check` no longer reports an auto-numbered unindexed slice-plan entry as a plain duplicate of a real `(NNN)` slice. The finding now names the collision and says to give the unindexed entry an explicit index, and per-slice checks resolve the index to the real slice instead of the placeholder (#67)
+- `cf check --fix` and `cf setup-ide` confirmation prompts no longer hang when stdin closes without an answer (Ctrl-D or an empty pipe); EOF now counts as "no"
+- Review gates now evaluate every split review (`*.part-N.md`) in numeric part order and block if any part fails to clear, instead of reading only the last one. A failing part-1 no longer hides behind a passing part-2, and part-10 no longer sorts before part-2 (#106)
+
+## [0.18.1] - 20260929
+
+### Changed
+- **Wide tables now fit your terminal.** `cf list` and similar table output shrinks the widest columns with a trailing `…` when a row would overflow the terminal width, instead of wrapping into an unreadable mess. The active/next markers sit in their own column so they are never cut. Piped (non-TTY) output is unchanged (#107).
+- `cf config` help for `rules.exclude` now describes ai-project-guide v0.19.0+ behavior: `setup-ide` also prunes already-installed rule files that newly match an exclude pattern.
+
+## [0.18.0] - 20260925
+
+### Fixed
+- **`cf check` in a multi-worktree project no longer repeats project-level findings once per worktree.** The dedup key now normalizes each view's checkout root out of a finding's `location` and `description` before comparing, so the same logical finding from two checkouts collapses to one. `--json` output shape and the kept finding's absolute `location` are unchanged; single-checkout projects see no change at all (#100).
+- **`--project foo` run from inside one of foo's worktrees now operates on that worktree**, not silently on the project root. This affects every command that resolves a project via the explicit `--project` flag. `cf status --project foo --worktree bar` still overrides with `bar` regardless of CWD (#101).
+- **`cf check --fix` in a multi-worktree project fixes every checkout that has the same fixable finding**, not just the first one seen. Fixes now apply per checkout before findings are merged and deduped, so a stale checkbox present in two worktrees gets corrected in both. MCP `workflow_check` with `fix: true` across multiple worktrees now also reports `fixed`/`fixLog`/`fixErrors` correctly merged from every checkout — previously these fields were silently dropped.
+- **`cf status` no longer swallows unrelated errors as a "looks like a git worktree" suggestion.** An unknown `--worktree` name (or any other error after a project has already resolved) now correctly exits non-zero with its real error message, instead of printing a bogus first-run suggestion and exiting 0.
+- `cf check --fix` in a multi-worktree project no longer prints a misleading "Fixed 2 of 1 findings" when cross-checkout dedup collapses the displayed finding count below the number of files actually fixed; the message now reports both numbers plainly.
+
+## [0.17.0] - 20260922
+
+### Fixed
+- **`cf validate frontmatter` now validates the worktree you are standing in**, not the project root. From a registered worktree every explicit path fell outside the document root and was silently dropped, so the command reported a clean pass having examined nothing — `filesChecked: 0`, exit 0. Anything gating on it passed everything (#88).
+- **Skipped paths are reported instead of vanishing.** `cf validate frontmatter` told you how many files it checked but never which of your paths it ignored or why. A path that is out of scope, not markdown, missing, or has no frontmatter now says so, in both `--json` and human output. "I checked nothing because everything you gave me was out of scope" is now distinguishable from "I checked nothing" (#92, #96).
+- Human output no longer prints `No inconsistencies found (0 files checked)` when nothing was examined. It lists the skipped paths with reasons and says `No files were checked`.
+- **`cf check` findings name the worktree they came from** in a multi-worktree project. Each finding carries a structured `worktree` field in `--json` and is prefixed with `[worktree-name]` in human output, so you can tell whose checkout a finding belongs to instead of hunting for it locally. Single-checkout projects — including a migrated project with one `default` worktree — see no change at all (#87).
+- **`cf list arch` lists every initiative from a worktree.** It was filtering initiative indices through the worktree's *slice* index range, so a worktree owning 920-929 hid every initiative outside that band — usually all of them, reporting `No initiatives found in initiative plan.` against a fully populated plan. An initiative plan is a project-level artifact and is no longer range-filtered; `cf list arch` and `cf list arch --all` now agree (#97).
+- The empty-initiative messages name the plan file or the directory that was scanned, so "none" is a statement you can go verify.
+
+### Added
+- `cf validate frontmatter --json` gains three fields, all additive — the existing `filesChecked`, `totalFindings`, `errors`, `warnings`, and `findings` keep their exact name, type, and meaning, so external consumers parsing this output keep working unchanged:
+  - `documentRoot` — the document root actually scanned, so a caller can tell which checkout it was.
+  - `filesSkipped` — how many supplied paths were not validated.
+  - `pathResults` — per-path outcome (`checked`, `skipped-out-of-scope`, `skipped-not-markdown`, `skipped-not-found`, `skipped-no-frontmatter`) for explicit-path calls. A full walk emits no path list.
+- **`rules.exclude` config key** — comma-separated filename globs for scoped rule files to skip when installing rules (e.g. `dart.md,swift*.md`). Matching is basename-only and skip-only; an already-installed file is never deleted. cf stores and validates the value; the guide's `setup-ide` script is what acts on it (ai-project-guide#23). Validation rejects surrounding whitespace and empty entries from doubled or trailing commas, because the consuming script matches patterns literally and a malformed one would silently never match.
+- **cf recognizes both managed-marker forms**, the legacy `[//]: # (context-forge:managed)` and the newer `<!-- BEGIN:context-forge -->`, anywhere in a file rather than only in its first 20 lines. **This must ship before ai-project-guide#22**, which makes the guide preserve your existing instructions file and append its managed block below — that pushes the marker past any fixed window, and without this change cf would stop recognizing managed installs and start prompting and writing `.bak` files on files it already manages (#98).
+
+## [0.16.0] - 20260921
+
+### Changed
+- **`tarball` is now the default guide install strategy** for `cf init` and `cf guides install` (previously `submodule`). The guide lands as plain files with no git wiring. Pass `--strategy submodule` to get the old behavior. Existing installs are unaffected: cf reads the installed strategy from disk, and a project whose config already names a strategy keeps it.
+- Tarball installs and updates are committed for you, the same way submodule installs already were. The commit touches only the guide directory, leaves anything else you have staged alone, and never pushes. Skipped, and reported, when the project is not a git repository or gitignores the guide.
+- A strategy passed with `--strategy` is saved to `guide.git_strategy` in the shared project config when it differs from what config resolves to, so a later bare install, or a teammate's, uses the same one. Previously the choice lived only in the flag and the next install silently went back to the default.
+- README documents switching an existing submodule install to tarball: `cf guides uninstall`, then `cf guides install --strategy tarball`.
+
+### Fixed
+- `cf guides uninstall` no longer leaves empty directories behind under `.git/modules/`. Module data belonging to other submodules is left alone.
+
+## [0.15.0] - 20260919
+
+### Changed
+- **Node.js 20.18.1 or newer is required** (previously 18). Node 18 reached end of life in April 2025 and Node 20 in April 2026; the tarball download now uses undici 7, which needs 20.18.1. Nothing else changes on a supported Node.
+- README documents what the `tarball` strategy actually needs: one person reaches github.com and api.github.com once, the guide lands as plain files, and `cf guides update` shows up as an ordinary reviewable diff.
+
+### Fixed
+- **Tarball guide installs work behind a corporate proxy.** `cf guides install` and `cf guides update` with the `tarball` strategy now honor `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` for the archive download. Previously only the tag lookup did, so the install failed halfway with a bare connection error. Failures now name the URL, which call failed, and which proxy variable applied; an exhausted GitHub API rate limit is reported as such instead of a generic status (#86).
+- `cf guides update` with the `tarball` strategy honors a configured `guide.source`. It previously always updated from the public default, silently replacing a fork's content (#85).
+- Tarball installs drop the guide repository's own git wiring (`.gitmodules`, `.gitignore`, and a self-referential `project-documents/` entry present in guide tags before v0.17.8) at extract time, so the guide lands as plain files in every case.
+- The review gate no longer picks a same-prefix sibling (for example a `*.response.md` file) over the actual review artifact, which produced a spurious UNKNOWN verdict and a misleading "review failed" reason. The failure rationale now names the file it read (#90).
+- `cf set plan|arch|slice|tasks <index>` matches zero-padded filenames (`003-slices.foo.md` for index `3`), so `cf next` and `cf check --slice` no longer report an existing slice plan as missing (#91).
+- The `git.integration_branch` config description no longer implies the integration branch prefixes slice branch names; only the fork and merge target change.
+
+## [0.14.0] - 20260910
+
+### Added
+- **Fresh clones no longer start with an empty guide directory.** Cloning a project without `--recurse-submodules` used to leave `project-documents/ai-project-guide` empty, and the failure surfaced later as a confusing missing-file error. `cf build`, `cf prompt`, `cf setup-ide`, and the MCP `context_build`, `prompt_list`, and `prompt_get` tools now check out the guide automatically the first time they read it, reporting what they did on stderr (CLI) or in a `notices` array (MCP). Closes #80.
+- **`cf init --strategy <method>`** selects the install strategy at project creation, with the same help text and trade-offs as `cf guides install --strategy`.
+- **`cf guides info` shows the submodule checkout state** (`in sync`, `out of sync`, `not initialized`). It remains read-only and never modifies the checkout, so you can inspect before acting.
+- **The guide directory now says it is managed content.** `cf guides info`, the MCP `guide_status` tool, and the README all state that `project-documents/ai-project-guide` is overwritten on `cf guides update` and that customizations belong under `project-documents/user/`. Closes #82.
+- README gained a "Choosing a guide install strategy" section covering all three strategies and why submodule remains the default.
+
+### Changed
+- **The `manual` install strategy is now called `tarball`.** `manual` still works as a deprecated alias and prints a notice, and existing config files with `guide.git_strategy = "manual"` keep validating. Closes #81.
+- **Output change:** `cf guides info --json`, the MCP `guide_install` and `guide_status` results, and `InstallResult.method` now report `"tarball"` where they previously reported `"manual"`. Existing tarball installs are detected correctly and need no migration. If you parse this field, update the comparison.
+- A checkout sitting at a commit other than the one your project pins is reported but deliberately left alone, since that is usually intentional. The message names `cf guides update` as the remedy.
+
+### Fixed
+- `cf guides update` works in a project that has no commits yet. Straight after `cf init`, the branch guard failed with `git rev-parse --abbrev-ref HEAD failed ... unknown revision` because the branch exists but has nothing on it. The guard now reads the branch name and, when it is not the trunk, asks for confirmation as it does for a branch with no shared history.
+- A malformed config file no longer silently falls back to the default install strategy and source. Config read errors now fail the command with the actual parse error.
+- The automatic checkout is bounded by a timeout, so an unresponsive proxy fails with offline guidance instead of blocking a read command for the operating system's connection timeout. User-initiated `cf guides install` and `cf guides update` remain unbounded.
+
+## [0.13.2] - 20260909
+
+### Changed
+- **Bare `cf install-commands` installs machine-level again** (`~/.claude/commands/cf/`, `~/.codex/skills/`), and the scope flag is now `--local` for a project-local install. This reverts the 0.13.0 change that made project-local the default: in practice the commands are wanted machine-wide essentially always, and defaulting to project-local cluttered every project with an identical copy of the same nine commands. `--global` is gone — machine-level is the default, so it has nothing left to select. `--target <dir>` still overrides both scopes, and `uninstall-commands` follows the same resolution.
+- If you relied on 0.13.0/0.13.1's project-local default, add `--local`. If you passed `--global` explicitly, drop the flag. Commands already installed project-local by an earlier version are not migrated or removed — clean them up with `cf uninstall-commands --local`.
+
+### Fixed
+- `cf setup-ide` now points at the offline install path when guides are missing, instead of only saying "Guides are not installed. Run 'cf guides install' first." — a user behind a corporate DNS/proxy was told to run a command that would fail again for the same reason, with no hint why. The offline guidance (`cf config set guide.source <path>`) is now one shared constant used by both `cf guides install` and `setup-ide`, so the two cannot drift apart (#78)
+
+## [0.13.1] - 20260909
+
+### Fixed
+- `cf guides install` and `cf guides update` now explain network and DNS failures and suggest a VPN/proxy check or a local `guide.source` instead of printing a bare git error (contributed, #77)
+- Guide install no longer hangs forever when git blocks on an interactive credential prompt; git runs non-interactively and fails with a message instead (#77)
+- Embedded credentials in a `guide.source` URL are redacted from error output (#77)
+- The tarball strategy no longer reports "Could not determine latest version" for network failures; the real cause is shown (#77)
+
+## [0.13.0] - 20260810
+
+### Added
+- **The nine `/cf:*` commands are now available in OpenAI Codex as agent skills.** `cf install-commands --ide codex` installs `cf-build`, `cf-check`, `cf-get`, `cf-next`, `cf-onboard`, `cf-project`, `cf-prompt`, `cf-set`, and `cf-status` as `SKILL.md` skill directories — invoked in Codex as `$cf-build`, `$cf-status`, etc. Project-local installs go to `.agents/skills/` (shareable via git, alongside the guide's workflow skills); `--global` installs to `~/.codex/skills/`. The thin passthrough skills (`status`, `get`, `check`, `next`, `project`, `set`) instruct the model to run the CLI and print its output verbatim — Codex skills have no output-injection directive like Claude commands' `` !`cf …` ``, so these are model-mediated by platform limitation (#74).
+- `cf setup-ide claude` and `cf setup-ide codex` now install the commands/skills too (machine-level), so one command fully configures an IDE. `cf init --ide codex` installs Codex skills instead of Claude commands; `cf init --no-ide` no longer installs any commands.
+- README: Codex MCP-server registration snippet for `~/.codex/config.toml`.
+
+### Changed
+- **Bare `cf install-commands` now installs project-local** (`.claude/commands/cf/`) instead of machine-level. The previous destination (`~/.claude/commands/cf/`) is available with `--global`. An explicit directory via `--target <dir>` still overrides both. `uninstall-commands` follows the same resolution (#74).
+
+## [0.12.0] - 20260809
+
+### Changed
+- **BREAKING: derived-status wire values are now underscored** — `in-progress` → `in_progress` and `not-started` → `not_started` in all machine-readable output: `cf list slices --json`, `cf list arch --json`, `cf status --json`, `cf next --json`, and the MCP `introspection_*` / `project_get` tools. There is no deprecated alias or dual-emission — the old hyphenated spellings are no longer emitted anywhere. Consumers comparing against `'in-progress'` / `'not-started'` must update; `complete`, `deferred`, `deprecated` are unchanged. One vocabulary now exists everywhere: on disk, in memory, and on the wire (#72).
+- **`cf check` now rejects non-canonical status spellings in frontmatter — and migrates them.** `validateFrontmatter` is strict: only the five canonical values (`not_started`, `in_progress`, `complete`, `deferred`, `deprecated`) pass. Historical aliases (`in-progress`, `done`, `completed`, `ready`, `pending`, `planned`, …) and close typos (e.g. `in-progres`) are flagged with an auto-fix that `cf check --fix` applies, rewriting the document to the canonical spelling; genuinely unknown values are flagged with no auto-fix. Reading remains lenient everywhere (`cf list`, `cf status` still understand every historical spelling); invalid-value messages now report the status exactly as typed.
+- **Every frontmatter write via `cf check --fix` (and the new `cf validate frontmatter --fix`) now stamps `dateUpdated` with the write date, in the same file write as the field it's fixing.** Previously a fixed document kept whatever `dateUpdated` it had before the fix, silently going stale. The one exception: when a fix's own target field is `dateUpdated` itself (the missing-`dateUpdated`-backfilled-from-`dateCreated` case), the stamp is skipped so the backfill isn't immediately overwritten with today's date (#71).
+- **BREAKING (internal API):** `updateFrontmatterField`, exported from `@context-forge/core/node`, gains a required fourth parameter (`dateUpdated: string`). Any external consumer calling it directly must pass a date stamp; there is no default. Acceptable in this unpublished 0.12.0 window (#71).
+
+### Added
+- **`cf validate frontmatter [paths...]`** — a new, narrow, scriptable command that validates YAML frontmatter against the per-docType schema, suitable as a pre-commit gate. With no paths, it walks all methodology documents (the same set `cf check` scans); with paths, it validates only the in-root `.md` files among them and silently skips everything else (out-of-root paths, non-`.md` files, nonexistent paths — no errors). Exit codes: `0` clean (or `--fix` resolved everything), `1` findings remain, `2` invocation error (unresolvable project). `--json` emits `{ filesChecked, totalFindings, errors, warnings, findings[] }`, plus `fixed`/`fixLog`/`fixErrors` in fix mode. Unlike `cf check --fix`, `--fix` here applies without a confirmation prompt — findings are per-document and deterministic, and the command's primary caller is a script (documented in `--help`) (#73).
+- Three new frontmatter docTypes are now recognized: `review-resolution`, `gate-evidence`, and `devlog` (squadron machine-artifacts). Each requires only `docType` and `dateCreated` — no `status` (these are append-only records with no lifecycle) and, deliberately, no `dateUpdated` (a single-file validator can't know whether such a document was edited after creation, so requiring the field would force a false backfill) (#73).
+- `cf setup-ide` and `cf init --ide` now support two new targets: `cursor` and `agents` (aliases `openai`, `codex`). The guide-side compiler already supported all four; CF's own target validation had simply never been updated to match. `cf setup-ide codex` writes `AGENTS.md` plus `.agents/skills/<name>/SKILL.md` for each skill; `cf setup-ide cursor` writes always-on rules to `AGENTS.md` and scoped rules to `.cursor/rules/*.mdc` (existing `paths:` → `globs:` conversion, unchanged).
+- Re-running `cf setup-ide cursor` against a project set up by an older version migrates it automatically: `.mdc` files superseded by the always-on/scoped split are removed and the removal is printed, so an upgraded project doesn't end up with the same always-on rule loaded from two places.
+
+### Fixed
+- `cf check`'s consistency rules now read frontmatter status leniently through the shared alias map. Previously seven rule sites compared the raw string, so a document whose frontmatter said `in_progress` or `not_started` — the canonical spellings — was silently ignored by rules like "frontmatter says complete but tasks are incomplete", while only the hyphenated spellings happened to match. All historical spellings now work everywhere status is read.
+- `cf check --fix` output now attributes each fix to the correct file. When several findings shared a rule (e.g. multiple frontmatter status fixes in one run), every "Fixed:" line displayed the first file's path and before-value.
+- `cf build --embed` now works for projects whose conventions live in `AGENTS.md` or `.github/copilot-instructions.md`, not only `CLAUDE.md`. Previously it silently embedded nothing for any non-Claude project — a defect reachable today, since Squadron automatically appends `--embed` for every non-Claude-Code model. A visible warning is now emitted when no conventions file is found at all, instead of silent omission.
+- Nested skill directories (`.claude/skills/<name>/SKILL.md` and similar) now actually reach registered git worktrees when propagating IDE setup files. Previously the propagation logic only copied top-level files in each directory, so any skill — which is always a subdirectory — silently never made it to a worktree.
+- Propagating IDE files to worktrees no longer silently does nothing for an unrecognized target; it now fails loudly instead.
+- Copilot's `AGENTS.md` no longer duplicates the scoped-rules index that `.github/instructions/*.instructions.md` already covers via `applyTo` — the index only appears for a target (like `agents`) with no scoped-rule surface of its own.
+
+## [0.10.7] - 20260802
+
+### Fixed
+- `cf check` (and the `workflow_check` MCP tool) no longer silently accept `draft` as a status value. Frontmatter validation previously special-cased `draft` as a hidden alias for `not_started`, so a slice/task/design document with an invented `draft` status passed validation with zero findings. It's now flagged the same as any other unrecognized status (`Invalid value 'draft' for field 'status'...`).
+
+## [0.10.6] - 20260801
+
+### Fixed
+- **On macOS, `cf` now stores its data at `~/.config/context-forge` — and, critically, the *published* package now agrees with local builds about where that is.** Previously the published core resolved storage to a legacy location (`~/Library/Preferences` via env-paths, with older builds using Electron's `~/Library/Application Support/context-forge/context-forge`), so installing from the registry silently pointed `cf` at a stale or empty store: projects seemed to vanish (`cf status` reported "no registered project found"), while the real data sat untouched in `~/.config/context-forge`. Any existing `~/Library/Preferences/context-forge` directory is migrated to the new location automatically (one-time atomic rename, only when the new location doesn't already exist); `CONTEXT_FORGE_DATA_DIR` still overrides everything. Linux and Windows are unaffected. (#53)
+- `cf next`'s index-band warning no longer misfires in worktree-configured projects. Previously it compared the active slice's hundred-block against the architecture's, assuming one architecture owns exactly one hundred-block — so every slice at 200/300/…/700 tripped a false warning in the common case of a `default` worktree declaring `indexRange: [100, 799]`. It now checks against the active worktree's declared range instead (falling back to the union of all configured worktrees, then to the original hundred-block check for projects with no worktrees), bringing it into agreement with `cf set slice`'s existing worktree-scoped warning. (#48)
+- A slice-plan line marked `[~]` (the descoped/deprecated convention) is no longer silently dropped by the parser. Previously such a line matched neither checkbox format, so the entry vanished entirely — not shown, not counted, not flagged. It now parses as a deprecated entry: `cf list slices` renders it `⊘ deprecated`, `cf next` skips past it, and `cf check` no longer false-flags a plan as inconsistent just because it contains one.
+
+## [0.10.3] - 20260718
+
+### Fixed
+- `parseFrontmatter()` no longer lets a nested field (e.g. a review's `findings[].verdict`) silently overwrite a same-named top-level field (e.g. `verdict`). Previously the parser tracked no indentation, so any colon-bearing line anywhere in the frontmatter block — however deeply nested inside an object, a list of objects, or a folded/literal block scalar — was read as a new top-level key. This could mask a real review verdict with the last nested value seen, producing a false `cf check` review-gate failure.
+- `cf next` now flags a stale `phase` field when a review gate is blocking progress, the same way it already does for every other lifecycle stage. Previously, if `phase` had drifted while a slice/tasks/code review was pending or failing, `cf next` named the review that was owed but gave no hint that `phase` itself also needed to move — the guidance loop went silent at exactly the moment a confused user most needed it. No change to whether a review gate blocks; this only adds the missing suggestion.
+
+## [0.10.2] - 20260714
+
+### Fixed
+- `cf check` now flags an architecture document whose frontmatter `status` isn't a recognized value — previously `cf list arch` would show it as "⚠ unreadable" but `cf check` stayed silent, because its frontmatter-schema validation used a different, narrower alias list than the one driving `cf list arch`. Both now agree on what counts as a valid status.
+- `cf check`'s "Architecture status is..." findings now name which architecture document they're about (e.g. `Architecture (100) status is "complete" but plan has unchecked entries`) instead of a generic, unattributed message — needed in projects with multiple architecture initiatives, where the old message couldn't be traced to a specific one.
+
+## [0.10.1] - 20260714
+
+### Fixed
+- `deferred` is now a fully recognized slice status. It was already accepted by `cf check`'s frontmatter validation, but `cf status`, `cf next`, and `cf list slices` didn't know what to do with it and surfaced a spurious "not a recognized status" warning. A slice marked `deferred` is now treated the same way a `deprecated` one already is — it's skipped when picking the next slice to work on, instead of being reported as an error or offered as "next".
+
+## [0.10.0] - 20260714
+
+### Added
+- `cf guides update` (and the `guide_update` MCP tool) now guard against committing a guide update on the wrong branch. If a `git.integration_branch` is configured and you're on `main`, the update is blocked outright with guidance on how to proceed. If you're on any branch other than the configured trunk (or `main`, when no integration branch is set), you're asked to confirm before it commits — pass `-y`/`--yes` to `cf guides update` to skip the prompt, or `confirm: true` to the MCP tool. Being on the trunk branch itself behaves exactly as before, with no new prompt.
+- `cf config unset <key>` — removes a configuration value. Defaults to the current project's config (same as `cf config set`); pass `--global` to remove a machine-wide value instead. Removing a key that isn't set is a harmless no-op, not an error.
+- Project-scoped config keys are now classified as `shared` (team-wide policy, e.g. `guide.source`, `workflow.review_enabled`) or `personal` (per-developer, currently only `git.integration_branch`). Personal keys are written to a new `.context-forge.local.toml` file instead of the committed `.context-forge.toml` — `cf config set`/`get`/`unset --project` route to the right file automatically, no flag changes needed. `cf init` now gitignores `.context-forge.local.toml` by default.
+- `cf check` now warns if a personal-scope key (e.g. `git.integration_branch`, set before this change or by an older version) is present in the committed `.context-forge.toml`. `cf config migrate-personal [--project <id>]` moves any such keys into the personal file — if a different value is already set in your personal file, it's left untouched and reported as skipped rather than overwritten.
+
+### Fixed
+- `cf config set <key> <value>` (with no `--project`/`--global` flag) now writes to the current project's config file, as it always should have — previously it silently wrote to a machine-wide file shared by every project on your machine, so a value set while working in one project could quietly leak into every other project. Writing to the machine-wide file is now an explicit opt-in via a new `--global` flag. `cf config get`/`set --project` (with no value) also now consistently resolves "the current project" from your working directory.
+
+## [0.9.2] - 20260712
+
+### Fixed
+- `cf status`/`cf next` no longer abort when a slice-design has an unrecognized frontmatter `status` value — that slice is now reported with a distinct, clearly-labeled warning instead of erroring out the whole command. `cf list slices` already handled this correctly; `cf status`/`cf next` now match.
+
+## [0.9.1] - 20260711
+
+### Changed
+- The `git.branch_root` config key is renamed to `git.integration_branch`, to match its intended meaning as a long-lived integration branch that work branches fork from and merge into (rather than a plain name prefix on branches that still fork from/merge to `main`). This is a clean rename with no deprecated alias — `git.branch_root` no longer resolves.
+- A slice design's docs-only declaration is renamed from `codeReview: none` to `review: none`, and now exempts the slice from the `slice`, `tasks`, and `code` review gates uniformly (previously it only exempted the `code` gate, so a minimal-documentation slice with no task file yet could still be blocked at the `slice` review boundary with no way to declare itself exempt). It does not affect the `arch` (architecture) review gate, which applies to a different document. `cf check --set-review-none <index>` now writes `review: none`.
+
+## [0.9.0] - 20260711
+
+### Changed
+- Internal: `NormalizedStatus` values (`complete`/`in-progress`/`not-started`/`deprecated`) are now referenced via the `STATUS` constant everywhere in `packages/core`, replacing ~65 scattered bare-string literals. No behavior change — purely a maintainability/type-safety refactor (a typo like `STATUS.Compelte` is now a compile error instead of a silent runtime mismatch).
+
+### Added
+- Foundation for review-aware workflow gating (initiative 240): `workflow.review_enabled`, `workflow.review_threshold`, and `workflow.review_unknown_as` config keys, plus per-gate override keys (`workflow.review_gates.{code,arch,slice,tasks}.threshold`). All keys default to off/empty and have no effect yet — no command reads them. Introduced to unblock upcoming gate-logic slices.
+- The review gate is now active behind `workflow.review_enabled` (default off — no behavior change unless explicitly turned on). When enabled, `cf next`/`cf status` (and their MCP equivalents `workflow_next`/`workflow_status`) automatically look for the review owed at the slice's current lifecycle position — `arch` before a slice plan, `slice` before task breakdown, `tasks` before implementation, `code` before advancing — and report `pending-review` or `review-failed` instead of the usual recommendation when that review is missing or its verdict doesn't clear the configured threshold. Per-gate `threshold` overrides are honored; the review type is always derived from position, never configured (an earlier per-gate `review_type` config key was removed before release, since position-derivation made it redundant).
+- `cf check`/`workflow_check` (and their `--fix`/`fix` variants) now surface the same review gate as a consistency finding, at all four lifecycle boundaries (`arch`/`slice`/`tasks`/`code`): an artifact whose owed review is absent reports a `warning`, and one whose review is present but failing (or UNKNOWN under the default policy) reports an `error`. Both are advisory only — never auto-fixable. Silent behind `workflow.review_enabled` (default off, byte-identical to prior output).
+- A slice design can now declare `codeReview: none` in its frontmatter to mark itself docs-only (e.g. documentation, analysis) — `cf next`/`workflow_next` will not block it on a missing code review at the pre-advance gate. Absent (the default) is unchanged: code review is still required before advancing.
+- `cf check`/`workflow_check` gained two new consistency checks: a task file that has started (any task checked) while its slice plan entry is still unchecked, and a task file that has started while its slice-design frontmatter still says `not_started` — both previously produced no finding at all. The frontmatter case is auto-fixable with `--fix`.
+- `workflow.review_gate_effective_date` config key (format `YYYYMMDD`, default empty = no cutoff): grandfathers any slice or architecture designed before this date out of every review gate boundary. Turning on `workflow.review_enabled` on a project with existing history no longer retroactively demands reviews for work completed before the gate existed.
+- `cf check --set-review-none <index>` declares a single slice docs-only by writing `codeReview: none` to its slice-design frontmatter — a quicker path than hand-editing the file for slices that can't produce a code review.
+- `cf list slices [archIndex]` and `cf list tasks [archIndex]` accept an optional index argument to inspect a different initiative's slice plan or task files directly (e.g. `cf list slices 140`) without first switching the active architecture pointer via `cf set arch` and switching it back afterward. Neither command mutates project state when given an explicit index. `[archIndex]` and `--all` cannot be combined on `cf list tasks`.
+
+### Fixed
+- `cf check`/`workflow_check` no longer reports a "requires a code review" finding for a checked slice-plan entry that has no slice-design or task file at all — there is no code to review, so the finding was a false positive. Slices with real design/task artifacts and no review are still flagged correctly.
+- `cf check`/`workflow_check` now correctly resolve zero-padded artifact filenames (e.g. `050-arch.foo.md`) when matching by numeric index. Previously the exact-prefix filename match failed for any zero-padded index, which silently skipped the `workflow.review_gate_effective_date` cutoff check for that artifact and produced a false "no review artifact found" finding even when the artifact predated the cutoff.
+- `cf check`/`workflow_check` no longer reports review-gate (or any other consistency) findings against slice indices that don't correspond to any real slice in the active plan. A legacy slice plan using the older, unindexed list format (predating the `(NNN)` index convention) could produce synthetic sequential indices that numerically collided with real project indices once merged across plans, generating phantom findings.
+- `cf config get/set --project <name>` now resolves the project name to its actual `projectPath` before reading/writing config, instead of treating the raw name as a literal directory. A bare registered project name previously caused `.context-forge.toml` to be silently written to the wrong (nonexistent) path.
+- `cf next`, `cf list slices`, `cf list arch`, and `workflow_status` no longer report a slice as "not started" when its tasks are actually complete (or in progress) but its slice-plan checkbox hasn't been ticked yet — a slice with 100% of its tasks done, awaiting checkbox sign-off, now reads as complete (shown as "tasks done" until checked) everywhere instead of contradicting `cf status`. `cf next` also now says "Continue slice N" rather than "Advance to slice N" when the next slice in the plan is already partway done.
+- `cf next` no longer suggests `cf set arch <index>` when the architecture pointer is already set but the file doesn't exist yet — a no-op that stranded users mid-transition between initiatives. It now suggests advancing to Phase 2 (Architecture) instead; the field-unset fallback is unchanged.
+- The pending architecture (`arch`) review gate in `cf next` no longer silently stops being checked once a slice plan exists. Previously, an unreviewed architecture would only be flagged before the slice plan was created; afterward the requirement vanished for good.
+- `cf check`/`workflow_check` now reports pending or failing reviews for all four lifecycle boundaries (`arch`, `slice`, `tasks`, `code`), not just `code` — each only once its corresponding artifact (architecture file, slice design, task file) exists. Finding text now correctly names the review type owed (e.g. "Run the slice review for slice 100") instead of always saying "code review". A malformed review artifact now degrades to a single error finding for that slice/architecture instead of aborting the whole check.
+- `cf config set` no longer misinterprets an all-digit value (e.g. a `YYYYMMDD` date) as a number for string-typed config keys — the value is now coerced toward the key's declared type instead of guessed from its shape.
+
+## [0.8.1] - 20260514
+
+### Fixed
+- `cf set` now normalizes artifact field values to bare stems before storage. Full paths (e.g. `project-documents/user/architecture/100-arch.foo.md`) and stems with `.md` suffix were stored as-is, causing `resolveArtifactPath` to construct an invalid doubled path — making `cf next`, `cf check`, and `cf build` silently fail to detect files on disk.
+- `cf check` now warns when an initiative plan entry is checked but its associated slice plan still has incomplete slices, rather than only comparing the initiative checkbox against the architecture document status.
+
+## [0.8.0] - 20260514
+
+### Added
+- `cf build --embed` — inlines all referenced artifact files (`fileArch`, `fileSlicePlan`, `fileSlice`, `fileTasks`, `fileHLD`, `fileSpec`, `fileConcept`) and `CLAUDE.md` as labeled fenced markdown blocks appended to the context output. Produces a fully self-contained prompt for models without file-read access. Missing files emit a warning rather than failing silently. Composes with all existing flags (`--phase`, `--slice`, `--json`, etc.).
+
+## [0.7.1] - 20260512
+
+### Fixed
+- `@context-forge/context-forge` (umbrella package) now exposes the `cf` command after a global install. Previously, installing the umbrella package installed `@context-forge/cli` as a dependency but did not link its binary — leaving users with no `cf` command until they manually installed `@context-forge/cli`. Fixed by adding a `bin/cf.js` forwarding script to the umbrella package.
+- `cf list slices`, `cf list tasks`, and `cf next` now correctly order slices by index regardless of the order entries appear in the slice plan file. Previously, entries added out of order during planning could cause the wrong slice to be flagged as "next".
+
+## [0.7.0] - 20260412
+
+### Added
+- `cf setup-ide copilot` and `cf init --ide copilot` — VS Code Copilot users can now use Context Forge. Compiles project rules and skills into the VS Code Copilot file layout: always-on rules → `.github/copilot-instructions.md` + `AGENTS.md`; scoped rules → `.github/instructions/*.instructions.md` with `applyTo` frontmatter; skills → `.github/prompts/*.prompt.md`. Existing unmanaged files are backed up before overwriting; managed files (from a previous run) are updated silently.
+
+### Fixed
+- `cf next` now recommends `cf set phase 'Phase 3: Slice Planning'` instead of `cf build` when a new slice plan file is configured but doesn't exist yet and the project is not already in Phase 3 — previously, running `cf build` from Phase 6 would have generated an implementation prompt rather than a slice planning prompt
+
+## [0.6.42] - 20260406
+
+### Fixed
+- `cf check` no longer flags `status: draft` — now treated as alias for `not_started` (work hasn't begun)
+- `cf check` auto-fixes missing `dateUpdated` by defaulting to `dateCreated` when present
+- `cf check` no longer floods output with "plan entry but no task file" notices for backlog entries — only flagged when a slice design exists (the only state where missing tasks is actually inconsistent)
+
+## [0.6.41] - 20260404
+
+### Fixed
+- Context profile filtering was silently disabled — `ContextProfileParser` only handled the expanded multi-line YAML format but the actual prompt file uses compact one-liners; all artifact fields (including `fileTasks`) were included in every phase regardless of profile configuration
+- Affects `cf build`, MCP `context_build`, and `/cf:build` slash command
+
+### Changed
+- `ProfileMap` type simplified from `Record<string, { variables: string[] }>` to `Record<string, string[]>`
+- `parseProfilesYaml` rewritten as format-agnostic state machine — no indent-depth logic
+
+## [0.6.40] - 20260404
+
+### Added
+- `cf list arch` / `cf list initiatives` now drives from the initiative plan (`001-initiative-plan.*.md`) when present, showing all entries with index, name, status, and arch file per entry — mirrors `cf list slices` behavior
+- Entries without an arch file show `not_started`; entries with an arch file but unchecked show `in_progress`; checked entries show `complete`
+- `cf list arch --json` emits structured array with `index`, `name`, `status`, `archFile`, `isActive` fields
+- `resolveInitiativePlanPath(projectPath)` exported from `@context-forge/core/node` — shared utility for locating initiative plan files
+
+### Changed
+- `cf list arch` falls back to `buildModel()`-based output on projects without a formal initiative plan (no behavior change for those projects)
+
+## [0.6.39] - 20260404
+
+### Added
+- `cf check` Rule 13 (`initiative-entry-vs-arch`): flags mismatch between initiative plan entry checkbox and corresponding arch doc `status` — warns and auto-fixes in both directions
+- `cf check` Rule 14 (`initiative-plan-status-vs-entries`): flags initiative plan frontmatter `status` vs. all-entries-checked state (mirrors Rule 7 for slice plans)
+
+### Fixed
+- `cf check` aggregate rules (stale-worktree-path, frontmatter-schema, initiative plan rules) were silently skipped when no slice plans existed; removed early-return guard that blocked them
+
+## [0.6.38] - 20260403
+
+### Fixed
+- `cf setup-ide claude` now propagates generated files (`CLAUDE.md`, `.claude/rules/`, `.claude/agents/`, `.claude/skills/`) to all registered worktrees after updating the project root. Worktrees do not maintain independent IDE config — they receive a copy from root. `.claude/settings.local.json` and `.claude/worktrees/` are intentionally excluded (worktree-specific).
+
+## [0.6.37] - 20260402
+
+### Added
+- Short-form flags for common CLI options: `-j` (`--json`), `-p` (`--project`), `-y` (`--yes`), `-f` (`--fix`), `-a` (`--all`), `-r` (`--raw`)
+- New `packages/cli/src/options.ts` module with 7 composable helper functions (`withJsonOption`, `withProjectOption`, `withYesOption`, `withFixOption`, `withAllOption`, `withRawOption`, `withProjectLevelOption`)
+
+### Changed
+- Migrated all 14 CLI command files to use shared option helpers from `options.ts` (removed ~70 inline option registrations)
+- Normalized `--project` option description to "Project ID or name (overrides default)" across all commands
+
+### Fixed
+- `cf check --fix` now reports "No fixable findings — nothing to apply." when no findings are auto-fixable, instead of silently showing check-only output
+- Version flag changed from `-V` to `-v` (`--version`)
+
+## [0.6.36] - 20260402
+
+### Added
+- `cf next` suggests `cf set phase` when current phase doesn't match the recommended phase
+- `cf next` warns when active slice is outside the architecture's index band (e.g., slice 904 under arch 100)
+- `cf next` recommends creating the architecture document when arch is set but the file is missing, even with an active slice
+- `warnings` field on `NextAction` type for non-blocking configuration warnings
+
+## [0.6.35] - 20260401
+
+### Added
+- `cf update` command — check npm for newer versions and prompt to install (slice 906)
+  - `--yes` flag for non-interactive auto-install
+  - `--json` flag for machine-readable version info
+  - Detects npm vs pnpm global installs; skips local dev installs
+
+## [0.6.34] - 20260331
+
+### Added
+- `cf worktree rm` shows git worktree removal hint when the directory still exists on disk
+
+### Fixed
+- `cf guides uninstall` from a worktree now only deinits the submodule in that worktree — no longer breaks the main repo's guide installation (fixes #46)
+- Guide directory physically removed from worktree after submodule deinit
+
+## [0.6.31–0.6.33] - 20260331
+
+### Added
+- `SlicePlanEntry.description` — overview text from slice plan entries (after bold name)
+- `FutureWorkItem.description` — description text from future work entries (after title separator)
+- `DocSummary.description` — overview paragraph extracted from `## Overview` section of arch docs
+
+## [0.6.30] - 20260330
+
+### Fixed
+- `cf guides update` now fetches before `--remote` and uses `--init` for resilience after worktree removal
+
+## [0.6.29] - 20260330
+
+### Added
+- Frontmatter schema registry (`FRONTMATTER_SCHEMAS`) — maps 8 docTypes to required fields with value constraints (slice 905)
+- `validateFrontmatter()` pure function exported from `@context-forge/core`
+- ConsistencyChecker Rule 12: validates all project documents against per-docType frontmatter schemas
+- Status alias normalization: accepts `in-progress`, `not started`, `active`, `completed` as valid
+- Auto-fix inference for missing `docType`, `slice`, `component`, `archIndex`, `project` from filename/context
+
+### Fixed
+- Slices and tasks outside worktree range now shown when plan is cross-initiative
+
+### Changed
+- Removed Rules 9 (missing-plan-status) and 11 (missing-arch-status) — subsumed by generic schema validation
+
+## [0.6.27] - 20260327
+
+### Added
+- Derive `fileArch` and `fileSlicePlan` from initiative plan when file is missing
+
+### Fixed
+- `cf install-commands` now removes stale slash commands from previous versions
+
+## [0.6.26] - 20260327
+
+### Fixed
+- MCP tools resolve project from CWD when `projectId` is omitted
+
+### Changed
+- Extracted compound workflow commands into dedicated CLI modules
+
+## [0.6.25] - 20260325
+
+### Added
+- 900-band maintenance initiative support: `maintenanceInitiatives` field in project model (same `Initiative` type, separate display bucket for visualization)
+- `getFieldNamesByGroup()` schema utility for deriving field lists from `PROJECT_FIELDS`
+- `agent_quickstart` MCP tool — structured JSON capability schema for machine consumers (slice 209)
+- `cf help --json` — machine-readable command catalog
+- `cf version --json` — structured version output
+- Structured JSON error format for `--json` mode (code, message, suggestion fields)
+- `docs/AGENT-INTEGRATION.md` — agent consumption guide
+- 7 new slash commands for compound workflows (`/cf:concept`, `/cf:initiatives`, `/cf:arch`, `/cf:plan`, `/cf:slice`, `/cf:tasks`, `/cf:implement`)
+
+### Fixed
+- `cf list tasks` and `cf list plans` no longer error on empty directories — returns empty result instead of `UserError` (blocked Squadron review commands on new projects)
+- Compound commands (`cf slice`, `cf tasks`, etc.) now validate numeric index — previously `cf slice banana` silently set invalid values
+- `cf set` warns on non-numeric artifact values that don't match expected patterns
+
+### Changed
+- Removed `agent_guide` MCP tool (superseded by `agent_quickstart`)
+- Replaced hard-coded field arrays (ARTIFACT_FIELDS, WORKFLOW_FIELDS, fieldKeys, MANAGED_FILES) with schema-derived or filesystem-derived sources
+- Initiative detection expanded from 100-799 to 100+ (900+ partitioned into `maintenanceInitiatives`)
+- Bare `cf build` (no flags) now shows help message instead of raw prompt output
 
 ## [0.6.8] - 20260318
 

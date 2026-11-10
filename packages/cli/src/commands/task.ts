@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import {
   FileProjectStore,
   resolveArtifactPath,
+  resolveSlicePlanPathByIndex,
   extractSliceIndex,
   parseSlicePlan,
   parseTaskFile,
@@ -10,12 +11,15 @@ import {
 import { resolveProjectWorktree } from '../utils/project.js';
 import { resolveProject } from '@context-forge/core';
 import { resolveOperationPath, getWorktreeIndexRange, isInIndexRange, resolveAllOperationPaths } from '../utils/worktree-overlay.js';
-import { UserError } from '../utils/errors.js';
+import { UserError, NO_SLICE_PLAN_MESSAGE } from '../utils/errors.js';
+import { warnIfBehindUpstream } from '../utils/upstreamLag.js';
+import { parseArchIndex } from '../utils/archIndex.js';
 import { printJson } from '../output/formatter.js';
+import { withAdoptedArtifactsRegistered } from './adoptedProject.js';
 import { label, success, dim } from '../output/styles.js';
 
 /** Shared action handler for listing task files. */
-export async function taskListAction(opts: { json?: boolean; all?: boolean; project?: string }): Promise<void> {
+export async function taskListAction(opts: { json?: boolean; all?: boolean; project?: string; archIndex?: string }): Promise<void> {
   const store = new FileProjectStore();
   const { id, worktreeId } = await resolveProjectWorktree({ project: opts.project }, store);
   const rawProject = await store.getById(id);
@@ -24,10 +28,11 @@ export async function taskListAction(opts: { json?: boolean; all?: boolean; proj
     throw new UserError(`Project not found: '${id}'.`);
   }
 
-  const project = await resolveProject(store, id, worktreeId);
-  if (!project) {
+  const resolved = await resolveProject(store, id, worktreeId);
+  if (!resolved) {
     throw new UserError(`Project not found: '${id}'.`);
   }
+  const project = await withAdoptedArtifactsRegistered(resolved, store, { id, worktreeId, projectOption: opts.project });
 
   if (!project.projectPath) {
     throw new UserError(
@@ -35,11 +40,31 @@ export async function taskListAction(opts: { json?: boolean; all?: boolean; proj
     );
   }
 
-  if (opts.all && rawProject.worktrees?.length) {
+  await warnIfBehindUpstream(project, worktreeId);
+
+  if (opts.archIndex !== undefined && opts.all) {
+    throw new UserError(
+      'cannot combine an explicit index with --all — --all lists tasks across worktrees of the active plan',
+    );
+  }
+
+  if (opts.archIndex !== undefined) {
+    // An explicit index request targets one specific plan directly, never
+    // touching project state — no worktree/--all aggregation.
+    const archIndex = parseArchIndex(opts.archIndex);
+    const operationPath = resolveOperationPath(project, worktreeId) ?? project.projectPath;
+    const resolvedPath = await resolveSlicePlanPathByIndex(operationPath, archIndex);
+    if (!resolvedPath) {
+      throw new UserError(
+        `No slice plan found for index '${archIndex}' (searched project-documents/user/architecture/).`,
+      );
+    }
+    await listTaskFiles(project, [operationPath], undefined, opts.json, resolvedPath);
+  } else if (opts.all && rawProject.worktrees?.length) {
     const paths = resolveAllOperationPaths(rawProject);
     await listTaskFiles(project, paths, undefined, opts.json);
   } else {
-    const operationPath = resolveOperationPath(project, worktreeId) ?? project.projectPath!;
+    const operationPath = resolveOperationPath(project, worktreeId) ?? project.projectPath;
     const indexRange = getWorktreeIndexRange(rawProject, worktreeId);
     await listTaskFiles(project, [operationPath], indexRange, opts.json);
   }
@@ -61,7 +86,7 @@ export async function taskItemsAction(opts: { json?: boolean; project?: string }
     );
   }
 
-  const operationPath = resolveOperationPath(project, worktreeId) ?? project.projectPath!;
+  const operationPath = resolveOperationPath(project, worktreeId) ?? project.projectPath;
   await listTaskItems(project, operationPath, opts.json);
 }
 
@@ -126,28 +151,36 @@ async function listTaskFiles(
   operationPaths: string[],
   indexRange: [number, number] | undefined,
   json?: boolean,
+  explicitPlanPath?: string,
 ): Promise<void> {
-  if (!project.fileSlicePlan) {
-    throw new UserError('No slice plan configured. Set one with: cf set slicePlan <path>');
-  }
-
-  const planRelPath = resolveArtifactPath('fileSlicePlan', project.fileSlicePlan);
-  if (!planRelPath) {
-    throw new UserError('Could not resolve slice plan path.');
-  }
-
-  // Try to find the plan file across operation paths
   let plan;
-  for (const op of operationPaths) {
-    try {
-      plan = await parseSlicePlan(join(op, planRelPath));
-      break;
-    } catch {
-      continue;
+
+  if (explicitPlanPath) {
+    // An explicit archIndex request reads the target plan directly — never
+    // resolves via project.fileSlicePlan, never mutates project state.
+    plan = await parseSlicePlan(explicitPlanPath);
+  } else {
+    if (!project.fileSlicePlan) {
+      throw new UserError(NO_SLICE_PLAN_MESSAGE);
     }
-  }
-  if (!plan) {
-    throw new UserError('Could not resolve slice plan path.');
+
+    const planRelPath = resolveArtifactPath('fileSlicePlan', project.fileSlicePlan);
+    if (!planRelPath) {
+      throw new UserError('Could not resolve slice plan path.');
+    }
+
+    // Try to find the plan file across operation paths
+    for (const op of operationPaths) {
+      try {
+        plan = await parseSlicePlan(join(op, planRelPath));
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!plan) {
+      throw new UserError('Could not resolve slice plan path.');
+    }
   }
 
   const activeIndex = extractSliceIndex(project.fileSlice);
@@ -167,12 +200,22 @@ async function listTaskFiles(
   }
 
   if (fileMap.size === 0) {
-    throw new UserError('Tasks directory not found: project-documents/user/tasks/');
+    if (json) {
+      console.log(JSON.stringify([]));
+      return;
+    }
+    console.log('No task files found.');
+    return;
   }
 
   const summaries: { index: number; name: string; files: string[]; completed: number; total: number; isActive: boolean }[] = [];
 
-  const filteredEntries = plan.entries.filter((e) => isInIndexRange(e.index, indexRange));
+  // Skip range filtering when the plan itself is outside the range
+  const planBaseIndex = /^(\d+)-/.exec(project.fileSlicePlan ?? '')?.[1];
+  const planOutsideRange = planBaseIndex && indexRange && !isInIndexRange(parseInt(planBaseIndex, 10), indexRange);
+  const filteredEntries = planOutsideRange
+    ? plan.entries
+    : plan.entries.filter((e) => isInIndexRange(e.index, indexRange));
   for (const entry of filteredEntries) {
     const matching = [...fileMap.entries()]
       .filter(([f]) => f.startsWith(`${entry.index}-tasks.`) && f.endsWith('.md'))

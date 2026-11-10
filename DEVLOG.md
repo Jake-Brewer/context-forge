@@ -1,3 +1,10 @@
+---
+docType: devlog
+project: context-forge
+dateCreated: 20260131
+dateUpdated: 20261107
+---
+
 # Development Log
 
 A lightweight, append-only record of development activity. Newest entries first.
@@ -7,16 +14,649 @@ Tags noted as `Tags: @scope/pkg@version` when versions are bumped.
 
 ---
 
+## 20261107
+
+### Release 0.19.26
+
+- **Contents:** slice 936 DEVLOG size-based archiving (`cf devlog archive`, `devlog-size` check warning and fix; #141)
+
+Tags: @context-forge/core@0.19.26, @context-forge/cli@0.19.26, @context-forge/mcp@0.19.26, @context-forge/context-forge@0.19.26
+
+## 20261106
+
+**p6: devlog-4**
+- branch-0:branch-0: PASS
+- implement-1:cf-op-0: PASS
+- implement-1:cf-op-1: PASS
+- implement-1:cf-op-2: PASS
+- implement-1:cf-op-3: PASS
+- implement-1:dispatch-4: PASS
+- implement-1:review-5: PASS (verdict: CONCERNS)
+- implement-1:checkpoint-6: PASS
+- implement-1:commit-7: PASS
+- close-out:dispatch-0: PASS
+- revise-code:dispatch-0: PASS
+- revise-code:review-1: PASS (verdict: CONCERNS)
+- revise-code:commit-2: PASS
+- revise-code:dispatch-3: PASS
+- revise-code:review-4: PASS (verdict: CONCERNS)
+- revise-code:commit-5: PASS
+
+## 2026-11-03
+
+### Release 0.19.25
+
+- **Contents:** fix: skip the remote guide tag lookup outside `cf guides info` (`cf setup-ide` no longer makes a network call; `cf guides update` makes one tag lookup instead of two)
+
+Tags: @context-forge/core@0.19.25, @context-forge/cli@0.19.25, @context-forge/mcp@0.19.25, @context-forge/context-forge@0.19.25
+
+## 2026-11-01
+
+### Release 0.19.24
+
+- **Contents:** `cf check --fix --no-commit` and `workflow_check` `noCommit` (fixes written in every checkout, none committed in other worktrees)
+
+Tags: @context-forge/core@0.19.24, @context-forge/cli@0.19.24, @context-forge/mcp@0.19.24, @context-forge/context-forge@0.19.24
+
+## 2026-10-29
+
+### Release 0.19.23
+
+- **Contents:** `cf build --embed` inlines the docs map and a size-capped comprehension doc (#139); fixes for `cf prompt get <full-key>` (#136), deprecated/deferred initiatives in `cf list arch` (#140), and `parseSlicePlan` swallowing unexpected read errors (#131).
+
+Tags: @context-forge/core@0.19.23, @context-forge/cli@0.19.23, @context-forge/mcp@0.19.23, @context-forge/context-forge@0.19.23
+
+### Release 0.19.22
+
+- **Contents:** slice 274 (codebase comprehension carried into later phases): `cf set comprehension`, MCP `project_update` `fileComprehension`, `### Codebase Reference` section in architecture, slice planning and slice design builds; minimum ai-project-guide raised to v0.22.11.
+
+Tags: @context-forge/core@0.19.22, @context-forge/cli@0.19.22, @context-forge/mcp@0.19.22, @context-forge/context-forge@0.19.22
+
+## 2026-10-27
+
+### Release 0.19.21
+
+- **Contents:** slice 273 (real adoption run via `/sq:onboard`, run report); fixes: adopted projects register their derived architecture, slice plan and concept so `cf next` advances (#137); architecture review gate message names the review file location and the opt-out (#132); `cf set plan` named in the no-slice-plan error; `cf init` reports a `.gitignore` write failure as a failed step. Guide updated to ai-project-guide v0.22.10.
+
+Tags: @context-forge/core@0.19.21, @context-forge/cli@0.19.21, @context-forge/mcp@0.19.21, @context-forge/context-forge@0.19.21
+
+## 2026-10-26
+
+### Release 0.19.20
+
+- **Contents:** slice 269 (adoption state collapsed to the `declined` opt-out), slice 271 (`cf detect`, `project_detect`, `cf init --json`, `cf prompt get --path/--comprehension`, pure `cf build`), slice 272 (docs and guide alignment, `cf prompt get` guide-minimum warning, minimum ai-project-guide raised to v0.22.8, `docs/ADOPTION-PRIMITIVES.md`); fix stale `adoption.state` warning in `cf next`.
+
+Tags: @context-forge/core@0.19.20, @context-forge/cli@0.19.20, @context-forge/mcp@0.19.20, @context-forge/context-forge@0.19.20
+
+## 2026-10-25
+
+### Release 0.19.19
+
+- **Contents:** slice 935 agent-scoped rule marker (`agents: [claude]` honored by setup-ide, #123); fix `cf init` in a repository subfolder no longer runs `git init` (#133); minimum ai-project-guide raised to v0.22.6 (conventions-reconciliation prompt, `cf docs map` in brownfield adoption).
+
+Tags: @context-forge/core@0.19.19, @context-forge/cli@0.19.19, @context-forge/mcp@0.19.19, @context-forge/context-forge@0.19.19
+
+## 2026-10-24
+
+### Release 0.19.18
+
+- **Contents:** brownfield adoption initiative 260 completed: slice 262 (squadron probe), 263 (retroactive slice plan entries), 264 (adoption-aware `cf next`), 265 (end-to-end verification and docs), 266 (conventions reconciliation), 267 (`cf docs map`), source-extension count fix
+
+Tags: @context-forge/core@0.19.18, @context-forge/cli@0.19.18, @context-forge/mcp@0.19.18, @context-forge/context-forge@0.19.18
+
+## 2026-10-21
+
+### Release 0.19.17
+
+- **Contents:** slice 261 (brownfield detection and `adoption.state`), `cf next` CI-setup offer, old-guide warning, single onboarding recipe, `cf init --name` fix in onboarding
+
+Tags: @context-forge/core@0.19.17, @context-forge/cli@0.19.17, @context-forge/mcp@0.19.17, @context-forge/context-forge@0.19.17
+
+## 2026-10-19
+
+### Release 0.19.16
+
+- **Contents:** slice 246 `workflow.permissiveness` setting (#122); install-hint fix (`cf guides install`)
+
+Tags: @context-forge/core@0.19.16, @context-forge/cli@0.19.16, @context-forge/mcp@0.19.16, @context-forge/context-forge@0.19.16
+
+## 2026-10-18
+
+### Release 0.19.15
+
+- **Contents:** fix: `cf next` in Phase 0 now finds a `000-concept.*.md` on disk when `fileConcept` is unset, instead of asking for a concept that already exists
+
+Tags: @context-forge/core@0.19.15, @context-forge/cli@0.19.15, @context-forge/mcp@0.19.15, @context-forge/context-forge@0.19.15
+
+### Release 0.19.14
+
+- **Contents:** slice 245 pending-decision gate (#121): `cf validate design`, `cf next`/`cf status`, and `cf check` block or warn on designs with pending PM decisions, behind `workflow.decision_gate_enabled`; project guide updated to v0.21.6
+
+Tags: @context-forge/core@0.19.14, @context-forge/cli@0.19.14, @context-forge/mcp@0.19.14, @context-forge/context-forge@0.19.14
+
+## 2026-10-16
+
+### Release 0.19.13
+
+- **Contents:** `/cf:onboard`, the Codex onboard skill and the `agent_onboard` MCP tool now suggest the guide's `/setup-ci` skill once a project has a stack. This repo's own guide is updated to v0.21.2.
+
+Tags: @context-forge/core@0.19.13, @context-forge/cli@0.19.13, @context-forge/mcp@0.19.13, @context-forge/context-forge@0.19.13
+
+## 2026-10-14
+
+### Release 0.19.11
+
+- **Contents:** warning when a checkout is behind its upstream (fixes #104); clearer setup-ide hint for a weak TypeScript ESLint config.
+
+Tags: @context-forge/core@0.19.11, @context-forge/cli@0.19.11, @context-forge/mcp@0.19.11, @context-forge/context-forge@0.19.11
+
+### Release 0.19.10
+
+- **Contents:** `cf setup-ide --force` replaces unmanaged or edited rule files, backing each up once (fixes #120).
+
+Tags: @context-forge/core@0.19.10, @context-forge/cli@0.19.10, @context-forge/mcp@0.19.10, @context-forge/context-forge@0.19.10
+
+### Release 0.19.9
+
+- **Contents:** `integrationBranch`/`targetBranch` context variables (fixes #70); `cf next`/`cf status` skip a deprecated or deferred current slice and plan entries with a bold prefix keep their index (#117, remaining parts open); `cf config get` truncation (fixes #118); tarball guide uninstall commits the removal (fixes #119). Initiative 200 closed.
+
+Tags: @context-forge/core@0.19.9, @context-forge/cli@0.19.9, @context-forge/mcp@0.19.9, @context-forge/context-forge@0.19.9
+
+## 2026-10-13
+
+### Release 0.19.8
+
+- **Contents:** setup-ide offers the guide's `required-rules.mjs` for weak ESLint flat configs (fixes #115); guide install names the unchanged case when it makes no commit; stale setup-ide note text fixed. Filed #119 (tarball uninstall leaves the deletion uncommitted).
+
+Tags: @context-forge/core@0.19.8, @context-forge/cli@0.19.8, @context-forge/mcp@0.19.8, @context-forge/context-forge@0.19.8
+
+### Release 0.19.7
+
+- **Contents:** Repo's own ai-project-guide updated to v0.20.11 (scripts/ removed, Fixes section added) and the IDE install refreshed with the native `cf setup-ide`.
+
+Tags: @context-forge/core@0.19.7, @context-forge/cli@0.19.7, @context-forge/mcp@0.19.7, @context-forge/context-forge@0.19.7
+
+### Release 0.19.6
+
+- **Contents:** Slice 214 (`cf validate design`) and slice 215 (native `cf setup-ide` install, no longer shells out to the guide's bash script; fixes #38, #40). `scripts` no longer protected in `guide.exclude`.
+
+Tags: @context-forge/core@0.19.6, @context-forge/cli@0.19.6, @context-forge/mcp@0.19.6, @context-forge/context-forge@0.19.6
+
+## 2026-10-10
+
+### Release 0.19.5
+
+- **Contents:** Repo's own ai-project-guide updated to v0.20.4 (P6 prompt uses `{task-files}`, #114) so the release and its bundled guide match.
+
+Tags: @context-forge/core@0.19.5, @context-forge/cli@0.19.5, @context-forge/mcp@0.19.5, @context-forge/context-forge@0.19.5
+
+### Release 0.19.4
+
+- **Contents:** `{task-files}` template variable resolves split task files from disk so prompts can name every part (#114). Storage-layer diagnostics moved to stderr, plus a `no-console` lint rule for core (#113).
+
+Tags: @context-forge/core@0.19.4, @context-forge/cli@0.19.4, @context-forge/mcp@0.19.4, @context-forge/context-forge@0.19.4
+
+## 2026-10-07
+
+### Release 0.19.3
+
+- **Contents:** Slice 932 — removing a worktree hands its index range back to the default worktree when the ranges border (#76). Slice 934 — the default worktree is identified by a stored `isDefault` marker instead of its name, with in-memory migration of existing data, a `(default)` tag in `cf worktree list`, and `defaultWorktree` on the remove result (#112).
+
+Tags: @context-forge/core@0.19.3, @context-forge/cli@0.19.3, @context-forge/mcp@0.19.3, @context-forge/context-forge@0.19.3
+
+### Release 0.19.2
+
+- **Contents:** Slice 931 — `cf guides update` previews added/removed/changed files before swapping and asks to continue (#110); `guide.exclude` can skip a single `project-guides/lint/<language>` and its change is committed with the re-extract (#111); `--version <tag>` and local `--source <path.tgz>` on `cf guides install|update` and the MCP tools (#93).
+
+Tags: @context-forge/core@0.19.2, @context-forge/cli@0.19.2, @context-forge/mcp@0.19.2, @context-forge/context-forge@0.19.2
+
+## 2026-10-06
+
+### Release 0.19.1
+
+- **Contents:** `cf config get --value`, `cf setup-ide --dry-run` / `--write-lint`, per-worktree guide install with `--root`, no `.bak` for capable guides; working ESLint + CI (#109).
+
+Tags: @context-forge/core@0.19.1, @context-forge/cli@0.19.1, @context-forge/mcp@0.19.1, @context-forge/context-forge@0.19.1
+
+## 2026-10-05
+
+### Release 0.19.0
+
+- **Contents:** Slice 213 — `cf check --fix` and MCP `workflow_check` are worktree-aware: each fix is written once in the checkout that owns it, fixes in other checkouts are committed there (never pushed), and unsafe or stale targets are deferred with a reason (`deferred[]`, `commits[]`, `fixLog[].worktree` in JSON). A failed git readiness check now defers that checkout instead of aborting the run. Removed unrouted `ConsistencyChecker.fix()` / `fixAll()` from `@context-forge/core`.
+
+Tags: @context-forge/core@0.19.0, @context-forge/cli@0.19.0, @context-forge/mcp@0.19.0, @context-forge/context-forge@0.19.0
+
+## 2026-10-04
+
+### Release 0.18.4
+
+- **Contents:** Slice 212 — `guide.exclude` config key for tarball guide installs; failed tarball guide update no longer leaves the project without a guide; `cf setup-ide` prunes stale files from registered worktrees (#103) and no longer touches worktrees after a "no" at the overwrite prompt.
+
+Tags: @context-forge/core@0.18.4, @context-forge/cli@0.18.4, @context-forge/mcp@0.18.4, @context-forge/context-forge@0.18.4
+
+## 2026-10-03
+
+### Release 0.18.3
+
+- **Contents:** Slice 929 — agent skills path alignment: machine-level Codex skills install to `~/.agents/skills`, and default-scope install/uninstall clears cf's own skills from the legacy `~/.codex/skills` (#99); `cf setup-ide copilot` propagates `.agents/skills/` to worktrees (#102).
+
+Tags: @context-forge/core@0.18.3, @context-forge/cli@0.18.3, @context-forge/mcp@0.18.3, @context-forge/context-forge@0.18.3
+
+## 2026-10-01
+
+### Release 0.18.2
+
+- **Contents:** Slice 928 — review gate provenance and exemption visibility: `workflow.review_weak_pass_as` gates derived/recovered PASS verdicts (#89, #105); `review: none` exemptions and weak-provenance clears surface in `cf check` / `cf next` (#83); `cf check --set-review-none` requires confirmation or `--yes` (#83); fallback slice-plan index collisions get their own wording (#67). Also: split reviews gate on every part (#106); confirm prompts resolve "no" on EOF.
+
+Tags: @context-forge/core@0.18.2, @context-forge/cli@0.18.2, @context-forge/mcp@0.18.2, @context-forge/context-forge@0.18.2
+
+## 2026-09-29
+
+### Release 0.18.1
+
+- **Contents:** CLI tables truncate wide cells to fit the terminal (#107); refreshed `rules.exclude` config description for guide v0.19.0 pruning. Added a `/release` skill for this repo.
+
+Tags: @context-forge/core@0.18.1, @context-forge/cli@0.18.1, @context-forge/mcp@0.18.1, @context-forge/context-forge@0.18.1
+
+## 2026-09-25
+
+### Slice 927 — worktree dedup, explicit-project resolution, and 0.18.0
+
+- **#100 fixed at the merge, not the producers.** The dedup key normalizes each view's own checkout root out of `location` and `description` before comparing — a boundary-safe token replacement (`/repo` cannot match inside `/repo-other`) — while the kept finding is pushed unmodified. `--json` shape and the surviving finding's absolute `location` are unchanged; single-checkout projects are byte-identical.
+- **#101's explicit `--project` branch now consults CWD.** `resolveProjectWorktree({ project })` resolves a `worktreeId` from the invoking directory when CWD sits inside one of that project's registered worktrees, matching what the no-flag path already did. A migrated single-worktree project now resolves `worktreeId: 'default'` from its own root under `--project`, same as bare `cf status` there.
+- **Rider: deleted the resolver's dead `worktree` option**, rather than hardening it. No production call site passed it — `cf status` already resolved `--worktree` itself with its own `UserError` — so the silent-fallback branch was unreachable code, confirmed by both the slice review (F001) and a full grep.
+- **#100's dedup exposed a second bug in the fix path, caught by the slice review before implementation (F002).** Applying fixes to the *merged* result meant only the first-seen checkout's file got written when two worktrees shared the same fixable state — the dedup collapse silently dropped the second checkout's fix. Resolved by applying fixes per view, before the merge, in both `cf check --fix` and MCP's `workflow_check` (which already did this correctly and would otherwise have gone asymmetric with the CLI). A new `mergeFixResults` sums `fixed` and concatenates `fixLog`/`fixErrors` without dedup, since each entry is a real write to a distinct file.
+- **Task 15's fix-verification test needed the real `ConsistencyChecker`, not the mocked one the task as first written named** — caught by the tasks review (F004) before implementation. `check.test.ts` and `check-worktree-attribution.test.ts` both mock the checker entirely, so neither has real files to fix. Delegated to a `tester` subagent with explicit instructions to run the real checker over real temp directories (mocking only the project store), which produced `check-worktree-fix.test.ts`: two real checkout fixtures sharing one fixable state, asserting both files flip on disk.
+- **Verification walkthrough surfaced a real, pre-existing bug unrelated to this slice.** `cf status --worktree <bogus>` silently exited 0 instead of erroring — `status.ts`'s catch block routed every `UserError` through a "looks like an unregistered git worktree" suggestion, and that suggestion always matches when CWD is a registered project root (the first entry `git worktree list` reports is always the current checkout). Fixed by gating the suggestion on a `resolutionFailed` flag set only when `resolveProjectWorktree` or the subsequent project lookup fails, not on every later `UserError`.
+- **Code review (GLM 5.3-flash, CONCERNS, reviewed `dd58f33`) found one real defect and three style notes; all four resolved.** F001: fix-mode's human output printed `Fixed ${fixed} of ${totalFindings} findings`, but after this slice those two numbers have different bases — a cross-checkout dedup collapse can make `fixed` (real file writes) exceed `totalFindings` (deduped display count), producing "Fixed 2 of 1 findings". Now reports file-update count separately whenever `fixed > totalFindings`, pinned by a new regression test; the ordinary "some findings weren't fixable" case (`fixed < totalFindings`) keeps its original wording unchanged. F002-F004 were DRY/typing cleanups: typed an untyped `let` binding in `cf status`, hoisted a duplicated `applyFixes`/`mergeFixResults` block out of `cf check`'s two fix-confirmation branches, and moved the attribute-then-collect loop (already generalized as `runAttributed` on the CLI side) into core so MCP's `workflow_check` calls the same helper instead of inlining it four times.
+- **Both design-time reviews (slice, tasks) had already caught real issues before implementation started** and were resolved in the design/task docs themselves, not deferred: the tasks review's F002 (a success criterion — migrated-project `--project` status JSON — traced to no task) got a new status-level test case; F003 (an 8-task, ~14-effort single commit checkpoint) got split into per-task commits; F004 is the Task-15 mocked-checker issue above.
+- **Released 0.18.0.** Minor: user-visible bugfixes, no breaking change. Tests at release: core 1244, cli 600, mcp 207.
+
+Tags: @context-forge/core@0.18.0, @context-forge/cli@0.18.0, @context-forge/mcp@0.18.0, @context-forge/context-forge@0.18.0
+
+## 2026-09-22
+
+### Slice 926 — worktree-scoped validate/check, and 0.17.0
+
+- **#88 was a silent false pass, and that is the whole story of this slice.** `cf validate frontmatter` validated the project root instead of the caller's worktree: `validate.ts` computed `worktreeId` and then destructured only `{ id }`, throwing it away. From a registered worktree every explicit path failed containment against the wrong document root and was dropped, so the command reported `filesChecked: 0`, exit 0 — a clean pass over nothing. Anything gating on it passed everything.
+- **The external cost was larger than the issue described.** squadron's pre-commit `frontmatter_gate.py` reads `filesChecked`. Inside a worktree on 0.16.0 it failed a *clean* document and a *bad* one identically — it could not tell them apart and failed closed on both, which is correct on broken input and useless as a gate. Its `test_schema_drift.py` went 3/6 → 6/6 on this build, and the live gate now passes clean and fails bad with cf's own finding text. squadron was not modified; the check ran through a `cf` shim on `PATH`.
+- **Skips now carry a reason (#92, #96).** `resolveExplicitPaths` had three unrecorded `continue` branches plus a fourth skip in the caller, all collapsing into the same zero. Each supplied path now reports `checked` or one of four skip reasons. `--json` gains `documentRoot`, `filesSkipped`, and `pathResults`; the five fields squadron parses are untouched, verified by diffing against the published build. "I checked nothing because everything was out of scope" is finally distinguishable from "I checked nothing".
+- **#87 attribution attaches before the merge, never in the description.** The dedup key is deliberately left without a worktree component — aggregate rules legitimately produce identical project-level findings across views and are supposed to collapse. Both constraints were pinned by breaking them on purpose and watching the right tests fail: adding worktree to the key breaks dedup; attributing post-merge misattributes `wt_a` findings as `wt_b`. `mergeCheckResults` was duplicated verbatim in CLI and MCP, so it moved to core first as a pure move — fixing one copy would have left `workflow_check` wrong.
+- **#97 ran opposite to the others.** `arch.ts` resolved the worktree *correctly*, then applied a slice-index range to initiative indices, so a worktree owning 920-929 hid every initiative outside it. Removed from both call sites; the other six `isInIndexRange` uses filter genuinely slice-indexed things and were left alone.
+- **Two bugs that only the real binary could find.** Unit tests are blind to both. (1) A migrated project has exactly *one* worktree named `default`, not an absent `worktrees` array — attribution gated on the array's presence added a `worktree` field to every single-checkout project's output. Caught by diffing `cf check --json` against published 0.16.0. (2) `cf --version` reports the same number on both builds for the whole cycle, so it cannot tell them apart; confirm by checking for a field the change introduces.
+- **The code review (GLM 5.3-flash, CONCERNS, reviewed `b7f892e`) found a defect my own test was hiding.** F002: the D6 test asserted `projectPath` equals the invoking checkout, but the fixture hardcoded that value into every mock result, so it could not fail. Behind it, `mergeCheckResults` took `results[0].projectPath` while each view's path had been overlaid to its worktree — so the output named the first *registered* worktree. Invoking from beta reported alpha's path. Verified by executing the merge, not reading it. The reviewer reached this from code alone and said plainly it could not read the design doc; D6 says exactly what it inferred. Resolution recorded in `926-resolution.code.*-r1.md`.
+- **#98 shipped ahead of its consumer.** cf now recognizes both managed-marker forms anywhere in a file. The 20-line window had to go, not shrink: the guide's preserve-and-append path puts the block at the *end* of an existing file, so the marker's position is unbounded by construction — measured at line 1 for a fresh install and line 64 behind a 60-line preamble. The test pinning the old cap was inverted with a comment naming it a decision. Inert until ai-project-guide#22 lands.
+- **`rules.exclude` added** (ai-project-guide#23). cf stores and validates; the guide's `setup-ide` script acts. Resolution is three-tier on the guide side (env → `cf config get` → none) after the config-only decision was reversed: `setup-ide` is 1078 lines of standalone bash with zero `cf` invocations, so config-only left standalone callers no channel at all. cf does not read the env var, so no cf config key became env-overridable.
+- **Filed, not fixed:** [#100](https://github.com/ecorkran/context-forge/issues/100) — project-level findings duplicate once per worktree because the dedup key includes an absolute `location`; pre-existing, now visible because labels explain it. [#101](https://github.com/ecorkran/context-forge/issues/101) — `--project` resolves no worktree, so #88's fix holds only for CWD-resolved invocation; pre-existing and shared across commands.
+- **Released 0.17.0.** Minor: new config key and new JSON fields, all additive, no breaking change. Single-checkout output is byte-identical to 0.16.0. Tests at release: core 1231, cli 591, mcp 206.
+
+Tags: @context-forge/core@0.17.0, @context-forge/cli@0.17.0, @context-forge/mcp@0.17.0, @context-forge/context-forge@0.17.0
+
+## 2026-09-21
+
+### Tarball becomes the default guide strategy
+
+- **Default flipped `submodule` → `tarball`**, reversing the PM decision recorded on #81 (20260909). What changed: squadron's README was the only thing steering new users off submodule, and the people hitting the default are corporate teams who end up with untracked-file and nested-repo confusion. `DEFAULT_GUIDE_METHOD` is derived from the `guide.git_strategy` config default, and `describeGuideStrategy` marks it in the CLI help and the MCP tool description, so the three cannot disagree. Existing installs are unaffected — detection reads the strategy from disk.
+- **Tarball install/update now commit**, matching what submodule already did. `commitPathIfChanged` gates on `git status --porcelain -- <path>` rather than an exit code (`gitExec` does not surface one): empty output covers both "unchanged" and "gitignored", so neither case needs its own branch. The pathspec on `commit` keeps the user's other staged work out. Tested against real git, not mocks — pathspec isolation and how an ignored path reports are git's behavior, and a mock would only restate the assumption.
+- **`--strategy` is persisted** to the shared project config when it differs from what config resolves to. Found by running the migration: after `install --strategy tarball` the config still said `submodule`, so the next bare install went back. Written only after the install succeeds, and always as the canonical name, never the `manual` alias. The config file itself is left uncommitted on purpose: a pathspec commit of `.context-forge.toml` would sweep in whatever else the user had edited there.
+- **Uninstall prunes empty parents under `.git/modules/`**, stopping at the first directory with contents so another submodule's data is never touched.
+- Verified end to end with the built CLI in scratch repos: bare `cf init` → tarball, committed; `init --strategy submodule` → `uninstall` → `install --strategy tarball` → bare reinstall honors the saved strategy; `.git/modules` gone after uninstall. Tests: core 1200, cli 558, mcp 202.
+- **Released 0.16.0.** All four packages in lockstep. Minor rather than patch: a changed default is a behavior change for anyone running a bare `cf init`.
+
+Tags: @context-forge/core@0.16.0, @context-forge/cli@0.16.0, @context-forge/mcp@0.16.0, @context-forge/context-forge@0.16.0
+
+## 2026-09-19
+
+### Issue sweep and 0.15.0 release
+
+- **#90, #91, #85, #86 fixed directly on main** — single-file bug fixes, no slice. #90 and #91 were the same defect class: a filename-prefix match with no check of the semantic field behind it (a review candidate's `docType`; zero-padding in `resolveFileByIndex`, whose sibling functions had been fixed in `59bab33` while this one was missed).
+- **#86 proxy.** The download half moved from Node's built-in `fetch` to undici's `EnvHttpProxyAgent`, closed in `finally` because an open keep-alive socket held the CLI process for the agent's idle timeout. undici 6's agent emits an experimental warning on every use; undici 7 does not but requires Node 20.18.1, so engines moved from >=18 to >=20.18.1 — the reason this is a minor bump. Both halves were verified live and separately: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0=` disables git's proxy so only the fetch goes through a bogus `HTTPS_PROXY`.
+- **Guide upstream moved under us.** ai-project-guide v0.17.8 removed its self-referential submodule; v0.17.10 added `.gitattributes export-ignore`, making it the first tarball free of dev-only paths. The cf extract filter (`1df7421`) covers older tags either way. Guide issues #22 and #23 filed as counterparts to cf #94 and #95 (managed begin/end markers with merge; rules exclude list) — marker strings proposed, not yet agreed, nothing implemented on either side.
+- **Filed** #93 (`--version <tag>` pinning and local tarball source), #94, #95. **Closed** #85, fixed in `d16d0ff` without the commit referencing it.
+- **Released 0.15.0.** All four packages in lockstep. Tests at release: core 1184, cli 558, mcp 202.
+
+Tags: @context-forge/core@0.15.0, @context-forge/cli@0.15.0, @context-forge/mcp@0.15.0, @context-forge/context-forge@0.15.0
+
+## 2026-09-10
+
+### Slice 925 code review and 0.14.0 release
+
+- **Code review (GLM 5.3, verdict CONCERNS, reviewed `a91eba9`)** — artifact `925-review.code.guide-install-robustness.md`. Six concerns, four notes, three passes; all ten actionable findings resolved in `16ff862`, per-finding record in the slice doc. CONCERNS clears the gate, so no re-review was required before merge.
+- **F002 was a real defect introduced during implementation.** `ensureCheckout()` went through `detect()`, which runs an unbounded `git ls-remote`, putting a network round-trip inside every read command — exactly the hang class D10 exists to prevent. Fixed by adding `GuideDetector.detectLocal()` (filesystem and local git only); `detect()` composes it with the remote fetch, `ensureCheckout()` uses the local form, `status()` is unchanged. A detector test now pins the no-`ls-remote` guarantee. Worth noting for future slices: end-to-end verification on a working network cannot catch an unwanted network call, only a test asserting its absence can.
+- **F001** `cf prompt get P<n>` resolved the shorthand, which reads the prompt file, before readying the guide; reordered with a call-order test. **F004** consolidated strategy knowledge into core so the MCP enum, its description, and CLI help derive from one table.
+- **Unborn-branch fix (`d50a2c5`)** — separate from the review. `cf guides update` died with "unknown revision" in a repo with no commits yet, the state `cf init` leaves behind. `evaluateBranchGuard()` ran `rev-parse --abbrev-ref HEAD`, which cannot resolve an unborn branch; it now falls back to `symbolic-ref` and re-throws any other failure. Pre-existing, reproduces on 0.13.2.
+- **Released 0.14.0.** Minor bump because the strategy rename is user-visible: `method` reports `tarball` where it reported `manual`. All four packages in lockstep. Tests at release: core 1159, cli 558, mcp 202.
+- **Deferred, non-blocking:** #85 (`TarballStrategy.update()` ignores `guide.source`) and #86 (tarball fetch does not honor `HTTP(S)_PROXY` while the git half does).
+
+Tags: @context-forge/core@0.14.0, @context-forge/cli@0.14.0, @context-forge/mcp@0.14.0, @context-forge/context-forge@0.14.0
+
+## 2026-09-09
+
+### Slice 925 — guide install robustness (#80, #81, #82)
+
+- **#80 auto-init.** `GuideInfo` now carries a `checkout` state and `GuideManager.ensureCheckout()` acts on exactly one of them: an uninitialized submodule, which has a single correct resolution. `cf build`, `cf prompt`, `cf setup-ide`, and the MCP context/prompt tools call it before reading guide content. An out-of-sync checkout is reported and left alone (D2) — it is usually deliberate, and resetting it would discard the user's intent.
+- **#81 rename.** `manual` → `tarball`, with `manual` kept as a deprecated alias in one `normalizeGuideMethod()` and in the `ConfigKeys` enum so existing config files still validate. The alias is reported by core, so the CLI flag and config paths warn identically without duplicating logic.
+- **#82 managed directory.** One `GUIDE_MANAGED_NOTICE` constant, printed by `cf guides info`, returned by `guide_status`, and quoted verbatim in the README.
+- **D6 default stands: submodule.** It pins a reviewable commit, updates through git rather than the GitHub API, and keeps a contribute-back path open. The one real cost — teammates cloning without `--recurse-submodules` — is what auto-init removes, so the reason to switch defaults went away rather than being traded off.
+- **Notices channel.** CLI notices go to stderr so piped stdout stays machine-readable; MCP has no stderr, so they ride in a `notices` array attached by one shared helper. Verified over the real transport that a sibling field reaches the client, since `context_build` and `prompt_get` return plain text with no payload to embed a field into.
+- **Code review (GLM 5.3, CONCERNS) resolved in a follow-up commit.** Two were real regressions: `cf prompt get P<n>` read the prompt file for shorthand resolution before the checkout was readied, and `ensureCheckout()` went through `detect()`, whose `git ls-remote` put an unbounded network round-trip into every `cf build` — the exact hang class D10 exists to prevent. Split out `GuideDetector.detectLocal()` (filesystem and local git only) and made `detect()` compose it with the remote fetch; read commands use the local form, status commands keep the remote one. Also: the offline remediation is appended once, not twice on top of `gitExec`'s own hint; `GUIDE_STRATEGIES` and the deprecation sentence moved to core so the MCP enum, its description, and CLI help derive from one table; `withNotices` keeps `notices` in its return type; `guide_status` gates the managed notice on `installed` like the CLI; test fixtures restore `GIT_ALLOW_PROTOCOL`. Per-finding detail is in the slice doc's Review Resolution.
+- **Three findings the design did not anticipate.** The `NETWORK_ERROR_PATTERNS` entry is `/connection timed out/i` (git's wording), not `/timed out/i`, so a new pattern was needed for our own timeout message to pick up the offline remediation text. Git blocks the `file` transport for submodule clones and treats every local path that way, so fixtures set `GIT_ALLOW_PROTOCOL=file`; production sources are https and need no such flag. `prompt.ts` reaches the guide via `PROMPT_FILE_RELATIVE_PATH`, which was absent from the design's grep list.
+
+Verification walkthrough, run against the real guide repo (v0.17.3) with `node packages/cli/dist/index.js`:
+
+```
+$ cf guides info                 # in a clone made without --recurse-submodules
+  Method:     submodule
+  Checkout:   not initialized
+  (guide directory still empty afterward — info is read-only)
+
+$ cf build 2>err.txt >out.txt
+  [stderr] Initialized the guide submodule at project-documents/ai-project-guide (e11dcd4).
+  (guide directory now populated; stdout carries no notice; --json parses clean)
+
+$ (cd project-documents/ai-project-guide && git checkout HEAD~1) && cf build
+  [stderr] The guide submodule ... is checked out at a different commit than this
+           project pins. It was left unchanged. Run cf guides update ...
+  (git submodule status byte-identical before and after)
+
+$ cf init --name g925-tb --no-ide --strategy manual
+  [stderr] Strategy 'manual' is deprecated; use 'tarball' instead.
+  [stdout] Method:   tarball        (no .gitmodules created)
+```
+
+Tests: core 1159, cli 558, mcp 202. Real-git fixtures cover the three checkout states; the CLI and MCP command tests mock the core barrel, so separate fixture-backed tests prove the behavior rather than just the call.
+
+### Electron package removed
+- Deleted `packages/electron` (180 files, ~22.5k lines, 46MB). It had been `private: true` at 0.0.1 — never published — and untouched since 2026-04-16 (a docs-only license commit). README had carried "deprecated, scheduled for removal" since; this executes it.
+- Safe by dependency direction: electron imported `@context-forge/core` in 32 places, and nothing imported electron. Removal touched only the root `dev` script (which pointed at it and would have broken), the electron/react/tailwind/vite keywords, `onlyBuiltDependencies` (`electron`, `electron-winstaller`, `@tailwindcss/oxide` all became dead), the README's access-point/deprecation/structure mentions, and `.claude/rules/electron.md` (rules for paths that no longer exist). `pnpm-workspace.yaml` needed no edit — `packages/*` glob.
+- Side effect: the long-standing `TemplateProcessor` "fileSlice that does not match pattern" failure was electron's and is gone with it. `pnpm -r test` is fully green for the first time in a while — 1829 tests (core 1102, cli 537, mcp-server 190). README test count updated from a stale 1345.
+- Recoverable from git history if the desktop app is ever revived.
+
+### #78 — setup-ide surfaces offline guide-install guidance — 0.13.2
+- `setup-ide` threw a bare "Guides are not installed. Run 'cf guides install' first.", so a user behind corporate DNS/proxy was told to re-run a command that would fail again for the same reason. It fails *before* any network call (guides absent from disk), so it cannot diagnose the original failure — it now points at the fix plus the offline path, which is the honest scope of what it can know.
+- Extracted the remediation sentence out of `withNetworkErrorHint` into an exported `GUIDE_OFFLINE_REMEDIATION`; `gitExec` stays internal, only the constant joins the guides barrel. The CLI's `setup-ide` test mocks `@context-forge/core/node` and so must hand-copy the string — a core-side test pins the exact text so that copy can't drift.
+
+### Install scope default reverted to machine-level — 0.13.2
+- Slice 924's design decision D5 (project-local default, `--global` opt-out) reversed after living with it: the nine commands are wanted machine-wide essentially always, and the local default cluttered every project with an identical copy. `resolveInstallDir` now falls through to `descriptor.globalDir()`, and the scope flag is `--local`; `--global` is removed outright rather than kept as a no-op alias, since machine-level is the default and there is nothing left for it to select. `init`/`setup-ide` drop their explicit `{ global: true }` and take the default. `--target <dir>` still beats both scopes.
+- D5's original rationale was polarity-matching with `cf config set --global`. That symmetry doesn't survive contact with use: config's machine-wide scope is the rare case worth spelling out, while for command install it's the norm. Recorded against D5 in the slice doc so the reversal isn't re-litigated later.
+- No migration for commands already installed project-local by 0.13.0/0.13.1 — `cf uninstall-commands --local` cleans them up. Done directly on `main` (no slice branch): behavior-only flip, docs, and a patch bump. cli 537 tests green.
+
+### PR #77 (Jake) cherry-picked — 0.13.1
+- Landed `07691b4` with the contributor's authorship: network/DNS hint in `gitExec`, credential redaction, `GIT_TERMINAL_PROMPT=0` + `GCM_INTERACTIVE=never`, `TarballStrategy.fetchLatestTag` propagating real errors, `err.cause` surfaced from fetch. Dropped the 30s `execFile` timeout from that commit (a slow clone would be misreported as an auth hang; the non-interactive env is the actual fix). Not taken from the PR's second commit: `guide.fallback_source` auto-retry (its cleanup misses `.git/modules/<path>`, so a submodule retry fails), the `cf init` Copilot retry, and the CHANGELOG/DEVLOG edits. Reply posted on the PR; #78 stays open.
+- Tags: @context-forge/core@0.13.1, @context-forge/cli@0.13.1, @context-forge/mcp-server@0.13.1, context-forge@0.13.1
+
+## 2026-08-10
+
+### Slice 924 (Codex Command Installer & Parity, #74) — merged, 0.13.0
+- The nine `/cf:*` commands now reach OpenAI Codex as agent skills (`$cf-build` … `$cf-status`): checked-in `cf-*/SKILL.md` assets under `packages/cli/commands/codex/`, installed by an IDE-aware `cf install-commands --ide claude|codex` with a `COMMAND_TARGETS` descriptor (flat-md vs skill-dirs layouts, per-layout stale pruning that never touches user-authored or guide skills). Target/alias vocabulary extracted to `ideTargets.ts`, shared with `setup-ide` — one resolution path, no cycle.
+- Wiring: `cf setup-ide claude|codex` now auto-installs commands/skills machine-level (it never installed commands before); `cf init --ide codex` installs Codex skills instead of unconditionally installing Claude commands (the #74 defect); `--no-ide` skips delivery. **Behavior change:** bare `cf install-commands` is now project-local (`.claude/commands/cf/` / `.agents/skills/`); `--global` restores the machine-level destination (`~/.claude/commands/cf/` / `~/.codex/skills/`).
+- Thin passthrough skills (`status`/`get`/`check`/…) are run-and-print-verbatim prose — Codex SKILL.md has no output-injection equivalent of Claude's `` !`cf …` ``; recorded as a platform limitation, not worked around. Live-verified by PM in a real Codex session: `~/.codex/skills/` global discovery confirmed (design D2); local-vs-global shadowing (D6) not exercised, informational only.
+- Parity audit closed with no new issues: README gained Codex MCP registration (`~/.codex/config.toml`) and `$cf-*` docs; MCP onboard/quickstart tools already IDE-neutral; `cf build --embed` AGENTS.md resolution confirmed (since 211).
+- Process: fast-track under the 900 maintenance initiative (reopened and closed back out same-day — plan entry + status flips only). Design + tasks split as separate artifacts with `review: none` PM declaration in the slice-design frontmatter gating all reviews. Merged `--no-ff` (c299e7f); cli 537 and core 1093 tests green post-merge. Tags: `@context-forge/core@0.13.0`, `@context-forge/cli@0.13.0`, `@context-forge/mcp@0.13.0`, `@context-forge/context-forge@0.13.0`.
+
+---
+
+## 2026-08-09
+
+### Slice 922 (Unify Canonical Status Vocabulary, #72) + Slice 923 (Frontmatter Validate Command & dateUpdated Stamp, #71/#73) — merged, 0.12.0
+- **922**: `STATUS` in `introspection/types.ts` became the single source of truth (underscored — `in_progress`/`not_started`), with `VALID_STATUSES` deriving from it instead of restating values; the `.replace(/-/g, '_')` workaround in `validateFrontmatter` that let the validator silently accept hyphenated status was removed, so `cf check` now rejects non-canonical spellings and `--fix` writes only canonical values. Reading stays lenient everywhere (`normalizeStatus()` unchanged). **Breaking change to `--json`/MCP wire values** (`in-progress`→`in_progress`, `not-started`→`not_started`), released as such. Merged to `main` (2c90918).
+- **923, Part B (#71)**: `updateFrontmatterField` now stamps `dateUpdated` on every frontmatter write (fourth, required parameter — a compile-time break for `@context-forge/core/node` consumers, acceptable in this unpublished window). Guards against double-writing when the caller's own target field is `dateUpdated` itself, so the existing `dateCreated`-backfill isn't immediately overwritten with the run date.
+- **923, Part A (#73)**: new `cf validate frontmatter [paths...]` command — a narrow, per-document, deterministic validator suitable as a pre-commit gate (unlike `cf check`, whose findings are cross-document and can cascade). No paths walks all methodology docs; explicit paths are filtered to in-root, existing `.md` files and everything else silently skipped (so a raw `git diff --name-only` list can be piped straight in). Exit 0/1/2 contract; `--json` output; `--fix` applies without a confirmation prompt (documented divergence from `cf check --fix`, since findings here are deterministic and the primary caller is a script). Backing service `validateFrontmatterFiles` extracted from `ConsistencyChecker`'s Rule 12 and exported from `@context-forge/core/node`; Rule 12 now delegates to it for document discovery while keeping its own dependency-injected parsing path, so the existing test suite stayed byte-identical through the refactor. Three squadron machine-artifact docTypes (`review-resolution`, `gate-evidence`, `devlog`) registered — `docType` + `dateCreated` only, deliberately no `dateUpdated` (a single-file validator can't know if a doc was edited after creation) and no `status` (append-only, no lifecycle).
+- Both slices' code reviews are on record: 922 merged without one (PM instruction); 923 got two runs — first PASS (8 pass, 2 note), a second re-run after merge came back CONCERNS on one finding (claimed `fixAction.field` type mismatch, citing the wrong sibling type — `ConsistencyFinding.fixAction`'s nested `detail` shape instead of the `FrontmatterFinding.fixAction` flat shape `validate.ts` actually consumes). Resolved as a rejected false positive via `sq review resolve` plus a manual disposition note; `workflow.review_threshold: concerns` already cleared the gate regardless.
+- Merged `923-slice.frontmatter-validate-command-dateupdated-stamp` into `main` (`--no-ff`, 1976437); core 1093 and CLI 517 tests pass; electron's one pre-existing `TemplateProcessor` failure is unrelated and untouched.
+- All four packages already at 0.12.0 (bumped ahead of this work, ec903a3); publish was deliberately deferred until #71/#72/#73 all landed — now true. CHANGELOG `[Unreleased]` retitled to `[0.12.0]`. Tags: `@context-forge/core@0.12.0`, `@context-forge/cli@0.12.0`, `@context-forge/mcp@0.12.0`, `context-forge@0.12.0`.
+
+---
+
+## 2026-08-02
+
+### Frontmatter status validation: `draft` is no longer silently accepted — 0.10.7
+- `validateFrontmatter` special-cased `status: draft` as a hidden alias for `not_started`, added 2026-07-14 (`7652611c`) to quiet a validator finding rather than fix the document that triggered it. Net effect: `cf check`/`workflow_check` never once flagged a fabricated `draft` status, which is why the AI-invented "draft" status kept recurring across sessions despite being covered in `file-naming-conventions.md`. Removed the special case; `draft` now produces the same `Invalid value 'draft' for field 'status'...` finding as any other unrecognized value.
+- Bumped to 0.10.7 (patch — bugfix only). Tags: `@context-forge/core@0.10.7`, `@context-forge/cli@0.10.7`, `@context-forge/mcp@0.10.7`.
+
+---
+
+## 2026-08-01
+
+### Slice 921: XDG Storage Path Migration — merged, 0.10.5
+- The regression that motivated this slice hit in production use today: reinstalling the global CLI from the registry replaced a local build, and the published core resolved storage to a legacy location (env-paths `~/Library/Preferences`; older builds used Electron's `~/Library/Application Support/context-forge/context-forge`, a store frozen 2026-02-19). Most projects then reported "no registered project found" while the real 29-project store sat untouched at `~/.config/context-forge`. Diagnosis was complicated by two coexisting installs — the pnpm-global `cf` symlinks into this repo's working tree (so it picks up local builds live), while the fnm npm-global copy is a real install that the registry reinstall had clobbered.
+- Fix (`storagePaths.ts`, dd221e7): on darwin, resolve to `~/.config/context-forge` (XDG-consistent with sibling tooling), with a one-time atomic-rename migration of any existing `~/Library/Preferences/context-forge` when the new location doesn't already exist. `CONTEXT_FORGE_DATA_DIR` override preserved; Linux/Windows untouched. Deps injectable for testing; 172-line test file covers resolution, override, migration, and migration-failure fallthrough (31a23e0).
+- Merged `921-slice.xdg-storage-path-migration` into `main` (`--no-ff`); core 1045 and CLI 471 tests pass. Ships with the two already-merged Unreleased fixes (#48 index-band warning, `[~]` slice-plan parsing).
+- Bumped to 0.10.5 (patch — bugfixes only). Tags: `@context-forge/core@0.10.5`, `@context-forge/cli@0.10.5`, `@context-forge/mcp@0.10.5`.
+
+---
+
+## 2026-07-17
+
+### Slice 917: Frontmatter Parser Nesting Fix & Corpus Verification — Complete
+- Bundles two unrelated small fixes found back-to-back while dogfooding `cf check`/`cf next` (see slice design's Scope section for the bundling rationale): issue #64 (frontmatter parser nesting bug) and issue #66 (`cf next` stale-phase-on-review-gate gap).
+- **#64**: `parseFrontmatter()` (`frontmatterParser.ts`) tracked no indentation, so any colon-bearing line — however deeply nested inside an object, list-of-objects, or folded/literal block scalar — was read as a new top-level key. A real-world shape (`verdict:` top-level, `findings[].verdict` nested) let the last nested `verdict` line silently clobber the true top-level value, masking the `normalizeVerdict()` leniency fix (`ccc90c4`) and producing a false review-gate failure. Fixed via indentation tracking (space-only; a tab-leading line is still top-level, per design F003) — the `FrontmatterData` contract is unchanged, so none of the 5 consumers needed changes. New unit tests cover the nested-object, list-of-objects, and folded-block-scalar shapes, plus an end-to-end scratch-project `cf check` assertion (fixture 406) proving the gate itself resolves the true verdict, not just that the parser returns the right string.
+- Built a one-off differential corpus-verification harness (`scripts/frontmatter-corpus-diff.mjs`, not shipped in `packages/core/src`) that parses every `.md` file under a project's `project-documents/user/` with both the pre-fix and post-fix parser and diffs the results field-by-field. Ran against this repo (248 scanned, 41 changed) plus 5 sibling projects — squadron, migratory, context-visualizer, migratory-viewer, trading-data (904 scanned, 311 changed) — 0 parser throws across all 6 roots. Every changed file was confirmed by hand (via field-name clustering plus direct sampling) to match the documented bug shapes (nested `findings[].{severity,category,summary,location}`, or a colon-bearing line inside a folded block scalar like `projectState: >`), not an unrelated behavior change.
+- **#66**: `WorkflowNavigator.getNext()`'s `pending-review`/`review-failed` branches were the only lifecycle branches that never set a `phase` field on the returned `NextAction`, so `enrich()`'s existing stale-phase-suggestion logic had nothing to compare against — `cf next` went silent about phase drift at exactly the moment a review gate was blocking progress. Fixed by deriving `phase` from the gate's `reviewType` (`slice`→Phase 4, `tasks`→Phase 5, `code`→Phase 6) via a new lookup and three new exported phase constants (`SLICE_DESIGN_PHASE`, `TASK_BREAKDOWN_PHASE`, `IMPLEMENTATION_PHASE`, following the existing `ARCHITECTURE_PHASE` pattern) — `enrich()` itself is unchanged. Confirmed by diff inspection that the no-active-slice arch-gate branch (912's territory) and `ConsistencyChecker` (`developmentPhase`-blind by design) are untouched.
+- 3 commits on `917-slice.frontmatter-parser-nesting-fix` branch (#64 parser fix + tests, #64 corpus verification, #66 phase fix + tests); full monorepo build clean; only the pre-documented pre-existing failures remain (3 `FileProjectStore`, 4 CLI `list.test.ts`).
+
+---
+
+## 2026-07-18
+
+### Slice 917 code review (CONCERNS) resolved; merged to main
+- Code review found 4 concerns: F001/F002 restated already-resolved design decisions (TD-1's minimal-patch tradeoff, F003's tab-indentation convention from the prior slice review) — no code change, documented in the design doc. F003 (loose `REVIEW_TYPE_PHASE` typing) and F004 (duplicated `reviewPhase` lookup across the `pending-review`/`review-failed` branches) were both real: fixed via a single `WorkflowNavigator.resolveReviewPhase()` helper with a `ReviewType` union + `isReviewType()` type guard, so an unrecognized `reviewType` now omits `phase` instead of being blindly indexed. All 85 `WorkflowNavigator.test.ts` cases pass unchanged.
+- Merged `917-slice.frontmatter-parser-nesting-fix` into `main` (`--no-ff`); full monorepo build clean.
+- Bumped to 0.10.3 (patch — two bugfixes, #64 and #66, no new capability). Tags: `@context-forge/core@0.10.3`, `@context-forge/cli@0.10.3`, `@context-forge/mcp@0.10.3`.
+
+---
+
+## 2026-07-14
+
+### Slice 908 Item D: Architecture Status Validation & Finding Attribution
+- Filed and fixed GitHub issue #63, found while dogfooding `cf list arch`/`cf check` on squadron (12-initiative project). Reopened catch-all maintenance slice 908 rather than starting a new standalone slice, per the lightweight-fold-in path for small maintenance items.
+- `cf check`'s frontmatter-schema rule (Rule 12, `validateFrontmatter()` in `frontmatterSchema.ts`) now delegates status-alias normalization to the same `normalizeStatus()`/`STATUS_MAP` that drives `cf list arch`'s "⚠ unreadable" label, instead of its own narrower, independently-drifted alias list. Previously an arch doc `cf list arch` correctly flagged as unreadable could pass Rule 12 silently and never surface in `cf check` at all.
+- `ConsistencyChecker.ruleArchStatusVsPlans` ("Architecture status is...") now names the architecture document by index (e.g. `Architecture (100) status is "complete" but plan has unchecked entries`), matching the naming convention already used by the sibling `ruleInitiativeEntryVsArch` rule — previously ambiguous in any project with more than one architecture initiative.
+- Verified end-to-end against a scratch project with a deliberately invalid arch status: `cf check` now reports both conditions correctly and attributably.
+- Bumped to 0.10.2 (patch — bugfix only, no new capability). Tags: `@context-forge/core@0.10.2`, `@context-forge/cli@0.10.2`, `@context-forge/mcp@0.10.2`.
+
+### Slice 915: Config Key Scope Classification (Shared vs. Personal) — Complete
+- Adds a required `scope: 'shared' | 'personal'` field to `ConfigKeyDefinition` (`packages/core/src/config/ConfigKeys.ts`), classifying all 14 keys — only `git.integration_branch` is `personal`, forcing an explicit decision on any future key at compile time. New `.context-forge.local.toml` project-scope file (`getProjectPersonalConfigPath()`) holds personal keys; `.context-forge.toml` stays purely shared/committed policy.
+- `ConfigManager.get/set/delete` route project-scope calls to the correct physical file based on the key's own `scope`, transparently — no caller (CLI, MCP, `branchGuard.ts`, `WorkflowNavigator`, etc.) changed. Read precedence: project-personal → project-shared → user → default, with a read-time fallback so a personal key already committed to the shared file (pre-existing-commit case) keeps resolving correctly instead of silently disappearing.
+- New `ConsistencyChecker` rule (`personal-config-in-shared-file`) flags any personal-scope key found in the shared file; new `cf config migrate-personal` command moves it, with explicit collision semantics (absent from personal → move; identical value → delete shared copy; different value → skip both, report `skipped (personal value already set)` — never silently overwrites a developer's local value). `cf init` now ensures `.context-forge.local.toml` is gitignored (create-or-append, one line, regardless of `--lite`). MCP `config_get` surfaces both project config paths.
+- Bug found and fixed via the manual verification walkthrough (not caught by mocked unit tests): `migrate-personal`'s identical-value-collision path called the auto-routed `delete(key, 'project')`, which for a personal-scope key routes to the *personal* file by design — silently wiping the value the migration was supposed to preserve while leaving the shared file's stale copy untouched. Fixed with a new narrow `ConfigManager.deleteFromSharedProjectFile()` method that bypasses scope routing; `migrate-personal` now uses it for both its moved-and-delete-shared paths. Re-verified the full 9-step walkthrough end-to-end after the fix.
+- Walkthrough itself also had a step-ordering bug (found before running it, not after): the original order set the personal file's value in step 1, then tried to demonstrate the shared-file fallback in step 4 — unobservable once the personal file already has a value, since personal always wins. Reordered so the fallback proves out before anything is ever written to the personal file. Also documents a known, low-risk gap (confirmed acceptable — no project has this key set in the wild yet): `cf config unset --project` cannot target a personal key's stale shared-file copy directly, since `delete()` routes it to the personal file by the same logic as `set()`; the manual-edit-TOML fallback is documented instead of adding new CLI surface for a case that doesn't need solving yet.
+- 7 commits on `915-slice.config-key-scope-classification-shared-vs-personal` branch (registry+routing, ConsistencyChecker rule, migrate-personal, cf init gitignore, MCP surface, the walkthrough-driven bugfix, wrap-up); full monorepo build clean; only the pre-documented pre-existing failures remain (3 `FileProjectStore`, 4 CLI `list.test.ts`).
+
+### Fix: `deferred` slice status now recognized (0.10.1)
+- Found via a live `cf status` run on squadron: `deferred` was already a valid frontmatter value per `frontmatterSchema.ts`'s `VALID_STATUSES` (so `cf check` was silent about it), but had no `NormalizedStatus` equivalent — `normalizeStatus()` dropped it to `undefined`, and `WorkflowNavigator.resolveEntryStatus()` treated that as an unrecognized-status error, surfacing a spurious warning on every `cf status`/`cf next` run for any deferred slice.
+- Added `STATUS.Deferred`; `deriveEntryStatus()`'s precedence lattice now treats `deferred` frontmatter the same tier as `deprecated` — a declaration of intent that overrides computed task-completion state (a deferred slice with tasks checked isn't "complete", the same way a deprecated one isn't "in progress"). `WorkflowNavigator.findFirstNotCompleteEntry` and `cf list slices`' next-slice picker both skip deferred entries the same way they already skip deprecated ones.
+- 1 commit directly to `main` (small, self-contained bugfix — not slice-scoped work); bumped to 0.10.1 (patch, no new capability). Full monorepo build clean; only the pre-existing failures remain.
+
+---
+
+## 2026-07-13
+
+### Slice 916: Guide Update Branch Guard — Complete
+- Adds a branch guard evaluated on every `cf guides update` / `guide_update` MCP call, immediately before the strategy's commit-producing `update()` step. Resolves `trunk` (`git.integration_branch` config, or `main` if unset) against the current branch and either proceeds silently (on trunk), blocks (on `main` when a different trunk is configured, or detached HEAD), or warns-and-confirms (any other branch, distinguishing `descends`-from-trunk vs. `unrelated` ancestry via `git merge-base --is-ancestor`). Closes a gap where 914's `git.integration_branch` guardrail was silently bypassed by this one code path.
+- New `packages/core/src/guides/branchGuard.ts`: `evaluateBranchGuard()`, a standalone `isAncestor()` helper (bypasses `gitExec`'s throw-on-nonzero contract via a local `execFile` wrapper, since `merge-base --is-ancestor` uses exit code as its actual return value), and `BranchGuardBlockedError`/`BranchGuardWarnError` — the single source of remediation text, surfaced as-is by both CLI and MCP. `GuideManager.update()` gained an optional `{ confirmed?: boolean }` parameter; the guard evaluates unconditionally regardless of strategy (including `manual`/`TarballStrategy`, which does no commit but still sees the block/warn UX by design, per PM decision — not worth a strategy-type skip for negligible-usage code).
+- CLI: `cf guides update` gained `-y`/`--yes` (via the existing `withYesOption` helper) and a warn-and-confirm flow reusing the already-shared `askConfirmation` from `utils/confirm.ts` (did not touch `setup-ide.ts`'s separate local copy — deduping that pre-existing duplication was out of scope). MCP: `guide_update` gained an optional `confirm` input parameter; an unconfirmed warn returns an `errorResult` instructing the caller to retry with `confirm: true` — the correct two-call analog to CLI's interactive prompt, given no stdin exists in that context.
+- **Prerequisite fix bundled in (Section 0, committed to `main` before the slice branch was cut):** `cf config set` was found to default to machine-wide user scope whenever `--project` was omitted (`config.ts:92`), silently leaking values set in one project (e.g. `git.integration_branch`) into every other project on the machine — directly undermining this slice's premise. Fixed by flipping the default to project-scope-resolved-from-CWD (matching `get`'s existing behavior), with a new explicit `--global` flag as the opt-in for machine-wide writes. Also added `cf config unset <key>` (new `ConfigManager.delete()`/`deleteKey()`, the latter pruning now-empty parent TOML tables) since no removal capability existed at all — needed to clean up the actual leaked keys on this machine without hand-editing TOML. Cleanup applied per PM's explicit per-key decision (removed the leaked `git.integration_branch`, corrected `workflow.review_enabled` to its intended `true`, left `workflow.review_gate_effective_date` untouched).
+- Full test coverage added per component: `branchGuard.test.ts` (19 tests, full decision-table + error-class coverage), `GuideManager.test.ts` (+7, guard integration + TarballStrategy parity), `guides.test.ts` CLI (+5), `guideTools.test.ts` MCP (+3), plus the Section 0 prerequisite's `config.test.ts`/`ConfigManager.test.ts` coverage. Verified end-to-end via a live scratch-repo walkthrough (submodule strategy) covering all three outcomes (block/proceed/warn) with both a configured integration branch and the unset/`main`-default case, `--yes` skip included — no discrepancies from the documented walkthrough.
+- 9 commits on `916-slice.guide-update-branch-guard` branch (core module, GuideManager wiring, CLI, MCP, each paired with a docs/checklist commit) plus 2 prerequisite-fix commits on `main` beforehand; full monorepo build clean; only the pre-documented pre-existing failures remain (3 `FileProjectStore`, 4 CLI `list.test.ts`).
+
+---
+
+## 2026-07-11
+
+### Slice 913: TD-5/TD-6 follow-up (found during PM review) — Complete
+- PM review of TD-1-3's `cf check` output on this repo surfaced two further pre-existing bugs, plus a self-inflicted one from the prior session's premature close: slice 913's own slice-design frontmatter had been set `status: complete` while 2 tasks (this review round) were still open, which `cf check` correctly caught as "frontmatter complete but tasks incomplete." Reverted to `status: in-progress`; no logic bug, just premature bookkeeping.
+- TD-5: `ruleReviewGate()`'s `preAdvance` (code-review) boundary guard only checked `planEntry?.isChecked`, unlike `preTasks`/`preImplementation` which also require their gated artifact (`docs.sliceDesign`/`docs.taskFile`) to exist. A checked plan entry with zero slice-design/task-file/review artifacts anywhere on disk (slices 185, 901, 903, 904 in this repo) was flagged "requires a code review — no review artifact found," a false positive since there's no code to review. Fix: guard now also requires `docs?.sliceDesign` to exist, mirroring the pattern two lines above it. Slices with real artifacts and no review (908, 910, 911) remain correctly flagged.
+- TD-6: architecture 050 (`050-arch.design-decisions.md`, predates the project's `workflow.review_gate_effective_date: 20260701`) was still flagged despite the effective-date cutoff that should exempt it. Root cause was not the cutoff logic — `extractFileIndex()` correctly parses `"050-arch..."` to the number `50`, but `detectDocuments()`'s `matchFiles()` then re-derives a literal string prefix (`"50-arch."`) that doesn't match the zero-padded filename, so `docs.architecture` resolves `null` and the cutoff check (`reviewGate.ts:202`, gated on `gatedArtifactFrontmatter` truthiness) is skipped entirely before it ever runs. Fix: `matchFiles()` now matches via `^0*${idx}${suffix}` (tolerant of leading zeros) instead of an exact prefix, applied across all 5 call sites in `documentDetector.ts` — a general fix benefiting all four review boundaries, not arch-specific.
+- Both regressions verified fail-without-fix/pass-with-fix via `git stash` before/after runs, not just "test passes." `cf check` on this repo: 16 findings (2 errors, 13 warnings, 1 info) → 8 findings (0 errors, 7 warnings, 1 info), all 8 confirmed correct by PM.
+- 1 commit on `913-slice` branch for TD-5+TD-6 (bundled — both found in the same review pass, both narrow `ConsistencyChecker.ts`/`documentDetector.ts` fixes); full monorepo build clean; only the pre-documented pre-existing failures remain (3 `FileProjectStore`, 4 CLI `list.test.ts`).
+
+---
+
+## 2026-07-10
+
+### Slice 913: Fix Phantom Review-Gate Findings, 909's Missing Slice-Design, and List-Command Plan Targeting (TD-1/TD-2/TD-3)
+- TD-1 root cause (found while dogfooding `cf check` on this repo post-243): `ConsistencyChecker.checkAll()` merges every discovered `*-slices.*.md` plan's entries into one global `index`-keyed map, "first occurrence wins." `slicePlanParser.ts`'s unindexed-entry fallback assigns a per-file sequential counter as `index` — fine for a single plan read in isolation, but `checkAll()`'s cross-plan merge treated that counter as a real project-wide index. `140-slices.context-forge-restructure.md` (12 fully-complete legacy entries, all unindexed, predating the `(NNN)` convention) produced synthetic indices 1–12 that collided with real low-numbered slices once merged, generating phantom "Slice 1"–"Slice 12" review-gate findings.
+- Fix: new `indexSource: 'explicit' | 'fallback'` field on `SlicePlanEntry`, tagged at both parser construction sites (`slicePlanParser.ts`); `checkAll()`'s merge loop now skips `'fallback'` entries before inserting into `uniqueEntries`, so they never enter the cross-plan index space. Scoped narrowly — single-plan consumers (`check()`, `cf list slices`, `parseSlicePlan()` itself) are unaffected by design; per-plan aggregate rules (e.g. `plan-status-vs-entries`) still legitimately evaluate a legacy plan's own internal consistency.
+- Regression fixture reproduces the real collision using 140's actual list format (`N. [x] **Name** — desc`, no bolded index) against a sibling indexed plan with colliding real indices 1-3 — split across two test files: the real (unmocked) `parseSlicePlan()` collision itself in `slicePlanParser.test.ts`, and `checkAll()`'s merge-loop exclusion (mocked introspector, since `ConsistencyChecker.test.ts` globally mocks `node:fs/promises` for its `readdir`-based discovery tests, which would silently break real `readFile` too) in `ConsistencyChecker.test.ts`.
+- TD-2: wrote a retroactive minimal slice-design for 909 (`909-slice.configurable-branch-root-prefix.md`, backdated to `20260628` — the commit date, not the authoring date) citing shipped commit `713d0c0`. Deliberately omits Technical Decisions/Data Flow/Verification sections (nothing was planned, so nothing to document there) and leaves `codeReview` undeclared at design time — a PM call, not an architectural default. Confirmed via `cf check --set-review-none 909`: PM opted to exempt (low-risk shipped code: one config key + validator + 45 lines of test coverage), now `codeReview: none`.
+- TD-3: new `resolveSlicePlanPathByIndex(projectPath, archIndex)` core helper (`resolveFileByIndex.ts`, same file as `resolveArtifactPath` — same "index → path" concern), backing an optional `[archIndex]` positional argument on `cf list slices` / `cf list tasks`. Lets either command target a non-active initiative's plan directly (`cf list slices 140`) without the previous four-step `cf set arch` round-trip, and without any project-state mutation — verified both by an executed real-CLI before/after `cf project get` diff and an automated byte-identical JSON-snapshot assertion in `list-arch-index-targeting.test.ts`. `[archIndex]` + `--all` on `cf list tasks` is a `UserError`, not silently ignored.
+- 2 commits on `913-slice` branch (TD-1+TD-2 bundle, TD-3 bundle); full monorepo build clean; only the pre-documented pre-existing failures remain (3 `FileProjectStore`, 4 CLI `list.test.ts`). Slice closed prematurely this session — reopened 2026-07-11 after PM review surfaced TD-5/TD-6 (see above).
+
+---
+
+## 2026-07-07
+
+### Convention: `.context-forge.toml` is committed project policy — use `--project` to write it
+- `.context-forge.toml` holds project workflow policy (guide source, review-gate thresholds, `git.branch_root`, `review_gate_effective_date`, etc.) — **no secrets**. It is the CF analogue of `tsconfig.json`/`.editorconfig`: **commit it**, do not gitignore it, so every clone / agent / CI resolves `cf next`/`cf check` identically. If it lived only on one machine, teammates' workflow guidance would silently drift from yours on the same repo.
+- CF splits config by scope. **`cf config set --project <key> <val>`** writes the project-scoped `.context-forge.toml` (shared, checked in). **`cf config set <key> <val>`** (no `--project`) writes the *user*-scoped config under the home dir (personal, never in the repo). Rule of thumb: project policy → `--project`; personal/experimental toggles → user scope, so they stay out of version control.
+- Note: this repo currently has no `.context-forge.toml` (runs on defaults) — that's fine; create + commit one only when you actually set project policy here.
+
+### Slice 912: design (Phase 4) + a bugfix surfaced while dogfooding it
+- Authored the slice 912 low-level design (folds GitHub #58 + #59): #58 `cf next` conditional `suggestedCommand` (phase-advance when `arch` already set), #59 gap 1 (arch gate evaluated independent of slice-plan existence), #59 gap 2 (`ruleReviewGate` widened to all four boundaries + a per-arch-index aggregate rule). Confirmed the 911 effective-date cutoff already covers all boundaries — no new plumbing. Added TD-5 (error isolation for the new `cf check` gate paths, via the existing `safe*` convention) to resolve the slice review's one concern (F004).
+- Fixed a real `cf config set` bug found while setting `workflow.review_gate_effective_date` on Squadron: the CLI blindly `Number()`-coerced any all-digit argument *before* the type check, so a YYYYMMDD date (a string-typed key) was rejected as `number`. Shell strips quotes, so quoting didn't help. Now coerces toward the key's declared type via `CONFIG_KEYS`; no config key is numeric today, so the old branch could only ever break string keys. +1 regression test. (`packages/cli/src/commands/config.ts`)
+- 3 commits on `912-slice` branch; slice not yet implemented (Phase 5 task breakdown pending).
+
+### Slice 912: implementation (Phase 6) — Complete
+- TD-1 (#58): `WorkflowNavigator`'s no-active-slice branch now suggests `cf set phase 'Phase 2: Architecture'` (and sets `NextAction.phase`) instead of a no-op `cf set arch <index>` when `fileArch` is already set. New exported `ARCHITECTURE_PHASE` constant in `projectSchema.ts` (derived from `PHASE_STRINGS[2]`) is the single source of truth for the new call site; the four pre-existing bare-literal sites were left as noted debt per the design.
+- TD-2 (#59 gap 1): dropped the `&& status.slicePlan === null` clause from the arch (`preSlicePlan`) gate guard in `getNext()` — the gate now evaluates whenever an arch file exists, inside the no-active-slice path, regardless of whether a slice plan already exists. Active-slice path deliberately unchanged (scope boundary; `cf check` covers that case).
+- TD-3 (#59 gap 2): `ConsistencyChecker.ruleReviewGate()` widened from `preAdvance`-only to all three slice-keyed boundaries (`preTasks`/slice, `preImplementation`/tasks, `preAdvance`/code), each guarded on the corresponding artifact's existence. New `ruleArchReviewGate` aggregate rule (`checkAll()`-only) audits the arch (`preSlicePlan`) boundary across every discovered architecture file, independent of slice-plan pairing. `suggestedFix` now names the actual review type instead of a hardcoded "code review".
+- TD-5: new `safeEvaluateGate()` helper wraps every `evaluateReviewGate()` call in try/catch, converting a throw into an `error`-severity finding instead of aborting `checkSlice()`/`checkAll()` — also tightens the pre-existing `preAdvance`-only path, which previously let a throw escape uncaught. In practice `evaluateReviewGate()` has no reachable throw path today (`parseFrontmatter`/`detectDocuments` are both exception-free by design), so this is defensive; verified via a mocked throw in `ConsistencyChecker.reviewGateWidened.test.ts` rather than a live fixture.
+- Found and fixed a pre-existing test-infrastructure bug while writing TD-3 tests: `ConsistencyChecker.reviewGate.test.ts`'s `makeIntrospectorWithPlanEntry` helper built its mock via `{ ...real, parseSlicePlan: ... }` — spreading a class instance drops its prototype methods, so `detectDocuments` silently became `undefined` and every call through it threw internally (caught by `safeDetectDocuments`, returning `null`). This accidentally made the existing tests only ever exercise the `preAdvance` boundary. Left the existing (broken-but-stable) helper alone — fixing it would flip several pre-242 tests' expectations, out of scope here — and used an explicitly-bound introspector (`real.detectDocuments.bind(real)`, etc.) in the new TD-3/TD-5 test files instead.
+- Task 4.1: new `reviewGate.cutoffIntegration.test.ts` proves the effective-date cutoff (911) flows through the actual `getNext()`/`checkAll()` call sites this slice rewired — zero new cutoff code, confirmed by test.
+- Task 4.2: ran the full Verification Walkthrough (Parts A-F) against a live scratch project via the real `cf` CLI, not just unit tests. Found one real CLI behavior not anticipated by the design: `cf set arch <index>` validates against an initiative-plan entry and refuses to set a pointer with no matching file — the walkthrough used `cf project set arch <stem>` instead (sets the field directly, the correct tool for "point at a file that doesn't exist yet"). Confirmed all four boundaries, the cutoff, and the aggregate arch rule behave exactly as designed end-to-end. Reverted the two user-scope config keys touched during the walkthrough (`workflow.review_enabled`, `workflow.review_gate_effective_date`) back to defaults afterward so the scratch testing doesn't leak into other projects on this machine.
+- 3 commits on `912-slice` branch (source+tests split across TD-1/TD-2 bundle, TD-3/TD-5 bundle, verification); full monorepo build clean; only the pre-documented pre-existing failures remain (3 `FileProjectStore`, 4 CLI `list.test.ts`).
+
+---
+
+## 2026-07-05 – 2026-07-06
+
+### Slice 911: Fix Slice-Status Derivation for Partial-Completion Slices — Complete
+- Root cause (GitHub #56): slice-plan entry status was derived purely from the plan checkbox (`isChecked ? complete : not-started`), so a slice with tasks done (or even partially done) but an unchecked plan entry read as "not started" in `cf next`/`cf list slices`/`workflow_status`, contradicting `cf status`. Reproduced against slice 242 post-completion.
+- New `deriveEntryStatus` helper (`packages/core/src/introspection/statusDerivation.ts`) implements the agreed precedence lattice: `deprecated` frontmatter > computed task completion > slice-design frontmatter > plan checkbox. Replaces five divergent inline mappings across `WorkflowNavigator.getNext()` (both find-sites), `cf list slices`, `cf list arch`, and two `ProjectModelBuilder` paths.
+- Found and fixed mid-implementation: `WorkflowNavigator.getStatus()`'s `slicePlan.entries` (what MCP `workflow_status` returns verbatim) wasn't routed through the derivation at all — was still returning the raw checkbox-only status even after `getNext`/`cf list` were fixed.
+- TD-2a (signal-resolution failures must surface, not silently degrade): `normalizeStatus()` now returns `undefined` for unrecognized input instead of silently defaulting to `not-started`; `parseTaskItems`/`parseTaskFile` now propagate genuine read failures (anything but ENOENT) instead of swallowing everything. Found and fixed the same swallow-pattern in `WorkflowNavigator.deriveSliceStatus`'s outer try/catch while implementing this.
+- Also resolves GitHub #57: `codeReview: none` slice-design frontmatter declaration (registered as an optional field in the frontmatter schema) lets `evaluateReviewGate()` skip the pre-advance code-review gate for docs-only slices. Default (absent) unchanged.
+- Two new `ConsistencyChecker` rule branches close the not-started-boundary gap the existing complete-boundary rules left open (task started but plan/frontmatter still says not-started).
+- Corrected a factual error in this slice's own design/task docs during implementation: registering `codeReview` was framed as suppressing a `cf check` "unknown field" warning — no such check exists in `validateFrontmatter()` (confirmed by reading it directly); slice 905 explicitly scoped that out as too noisy. Registered anyway for real value: `cf check` now validates the field's value.
+- Slice 243 (the design's intended live docs-only verification fixture) has no slice-design/task file written yet — flagged as a follow-up for whoever designs it.
+- 5 commits, ~40 new tests across `statusDerivation`, `WorkflowNavigator`, `ProjectModelBuilder`, `ConsistencyChecker`, `reviewGate`, `frontmatterSchema`, and CLI `cf list` derived-display coverage.
+
+### Follow-up: review-gate migration friction (same session)
+- Dogfooding 911 on this repo (`cf check` with `review_enabled` on) surfaced 63 findings — almost all "missing code review" for slices 1-12/161-210/901-911, none of which ever existed under the review-gate system. Added `workflow.review_gate_effective_date` (YYYYMMDD grandfather cutoff, resolved once in `ResolvedGate` so it's free for pre-resolved callers) and `cf check --set-review-none <index>` (direct convenience command, writes `codeReview: none` to the slice-design file).
+- Filed [#59](https://github.com/ecorkran/context-forge/issues/59): the `preSlicePlan`/arch gate in `getNext()` only fires while no slice plan exists yet (orphaned once one is created — this is why completing Phase 2 didn't surface a pending arch review), and `cf check`'s `ruleReviewGate` hardcodes `preAdvance` only, never checking `arch`/`slice`/`tasks`. Out of scope for 911; noted that the effective-date cutoff must cover all four boundaries once #59 widens coverage (it already does, since it's centralized in `evaluateReviewGate()`).
+- 1 commit, 4 new tests across `reviewGate`, `ConfigManager`, and CLI `check` coverage.
+
+---
+
+## 2026-06-21 – 2026-06-24
+
+### Initiative 240: Review-Aware Workflow Gating — Phase 2 Architecture Complete
+- Authored `240-arch.review-aware-workflow-gating.md`; iterated through full arch review cycle (8 findings, all resolved via PM discussion)
+- Decisions locked: `workflow.review_enabled` / `review_threshold` / `review_unknown_as` config keys; `pending-review` and `review-failed` as first-class slice status values; gate inserts between Priority 5 and Priority 6 in `WorkflowNavigator.getNext()`; existing `NNN-review.{reviewType}.{slug}.md` convention used as-is; initiative-level gate (`pre-slice-plan`) defined in arch, gate logic deferred to later slice
+- Commits: `6c667b7` docs(arch+review), `f96fea1` guides(CLAUDE.md+python rules+submodule)
+
+---
+
+## 2026-04-11
+
+### Slice 210: GitHub Copilot / VS Code IDE support — Complete
+- `cf setup-ide copilot` and `cf init --ide copilot` add a second IDE target for VS Code Copilot users
+- Always-on rules compile to `.github/copilot-instructions.md` + `AGENTS.md`; scoped rules to `.github/instructions/*.instructions.md` with `applyTo`; skills to `.github/prompts/*.prompt.md`
+- `isManagedCopilotFiles()` safety check mirrors Claude path; unmanaged files backed up before overwrite
+- Worktree propagation extended; 26 new unit tests; guides script adds `copilot` case alongside existing `claude`
+- Commits: `11a2229` feat(cli), `ef33a3c` feat(guides), `4502331` docs
+
+---
+
+## 2026-04-03
+
+### setup-ide worktree propagation (v0.6.38)
+- `cf setup-ide claude` now propagates `CLAUDE.md`, `.claude/rules/`, `.claude/agents/`, `.claude/skills/` to all registered worktrees after updating root
+- Root is always the source of truth; worktrees receive copies (no independent IDE config)
+- `.claude/settings.local.json` and `.claude/worktrees/` intentionally excluded
+- Fixes stale CLAUDE.md/rules in worktrees after every root setup-ide run
+
+---
+
+## 2026-04-02
+
+### workflow_next improvements (v0.6.36)
+- `cf next` suggests `cf set phase` when current phase doesn't match recommended phase
+- Index band mismatch warning when slice is outside arch's hundred-block
+- Arch-missing detection for active slice path (Priority 2.5)
+- 8 new tests, backfilled CHANGELOG for 0.6.26–0.6.36
+- Commits: `4091b2c` feat, `915612b` bump, `988e855` changelog
+
+### Slice 907: CLI Short-Form Options — Complete
+- Created `packages/cli/src/options.ts` with 7 composable helpers (`withJsonOption`, `withProjectOption`, `withYesOption`, `withFixOption`, `withAllOption`, `withRawOption`, `withProjectLevelOption`)
+- Migrated all 14 CLI command files to use shared helpers; removed ~70 inline option registrations
+- Short-form flags added: `-j`, `-p`, `-y`, `-f`, `-a`, `-r`
+- 22 unit tests for shared helpers (short flags, long flags, chaining, no-short-flag for project-level)
+- All 400 CLI tests, 767 core tests, 183 MCP tests passing
+- Commits: `698787b` design, `9c6581b` tasks, `0ae8f35` feat(module), `d1bd899` refactor(high-use), `4853423` refactor(remaining)
+
+---
+
+## 2026-03-31
+
+### Slice 906: CLI Self-Update Command — Complete
+- `cf update` command: checks npm registry for latest version, prompts to install
+- Core utilities: `compareSemver`, `fetchLatestVersion`, `detectInstallMethod`, `runUpdate`
+- Supports `--yes` (non-interactive), `--json` (machine-readable), npm/pnpm global detection
+- Local dev install detection via package.json heuristic — skips update with message
+- 20 unit tests covering semver comparison, fetch mocking, install method detection
+- 1,426 total tests passing across all packages
+- Commits: `e16b08e` core utilities, `01c2120` command registration
+
+### Slice 194: Worktree-Scoped Guide Uninstall — Complete
+- `GuideManager.uninstall()` now detects worktree mode via `operationPath` and runs only `submodule deinit` scoped to the worktree
+- CLI shows worktree-specific hint after deinit
+- 7 new tests for both uninstall paths (worktree-mode and full)
+- Fixes GitHub issue #46
+- Commits: `70f34b6` core fix + tests, `70ee231` docs + artifacts, `fcdbbc8` review
+
+---
+
+## 2026-03-30
+
+### Slice 905: Frontmatter Schema Validation — Complete
+- Schema registry: `FRONTMATTER_SCHEMAS` maps 8 docTypes to required fields with value constraints
+- `validateFrontmatter()` pure function with status alias normalization (hyphens, spaces, "active", "completed")
+- ConsistencyChecker Rule 12: scans all methodology directories, validates frontmatter per docType
+- Removed Rules 9 (missing-plan-status) and 11 (missing-arch-status) — subsumed by schema validation
+- `cf check --fix` auto-fixes missing `status` fields with `not_started` default
+- Fixed 12 project documents (added missing status to reviews and task files)
+- 726 core tests passing (12 new schema/validation tests, 6 old rule tests removed)
+- Commits: `2282fb3` schema registry, `254c74e` validateFrontmatter, `b3b90b8` checker integration, `c907af7` remove Rules 9/11, `c84efac` fix project documents
+
+## 2026-03-25
+
+### Slice 209: AI-Agent Consumption Interface — Complete
+- `cf help --json`: machine-readable command catalog (27 commands) from Commander runtime
+- `cf version --json`: version, guideVersion, breaking changes array for cache invalidation
+- Structured JSON errors: `ErrorCode` type on `UserError`, JSON output via `--json` or `CF_JSON=1`
+- `agent_quickstart` MCP tool: structured capability schema with 7 capability groups and CLI equivalents
+- Idempotency: `projectSetAction` detects no-change, prints "already set", exits 0
+- `docs/AGENT-INTEGRATION.md`: 65-line integration guide for agent authors
+- CLI, MCP, core package READMEs updated — all tool categories, compound commands, v0.6 changelog
+- All 1387 tests passing (716 core, 383 CLI, 182 MCP, 106 electron)
+- Commits: `7e2503e` help --json, `1528de7` version --json, `64f07c2` JSON errors, `cda1cc0` agent_quickstart, `f949938` idempotency, `7a0ffce` agent integration guide, `fb5fa0c` README updates
+
+---
+
 ## 2026-03-24
 
-### Slice 209: AI-Agent Consumption Interface — Design Complete
+### Slice 209: AI-Agent Consumption Interface — Task Breakdown Complete
 - Slice design for making CF a first-class tool for AI agent consumption
-- `cf help --json`: machine-readable command catalog from Commander runtime (no static maintenance)
-- `cf version --json`: version + guide version + breaking changes array for cache invalidation
+- Task breakdown: 8 sections, 20 tasks covering all 7 deliverables
+- `cf help --json`: machine-readable command catalog from Commander runtime
+- `cf version --json`: version + guide version + breaking changes array
 - Structured JSON errors with error codes when `--json` active
 - `agent_quickstart` MCP tool: structured capability schema for pure-machine consumers
 - Idempotency audit: detect no-change in `cf set`, skip write
-- `AGENTS.md`: integration guide for agent authors (MCP-first pattern)
+- `docs/AGENT-INTEGRATION.md`: integration guide for agent authors (not AGENTS.md — reserved filename)
+- Package README updates for CLI, MCP, and core
 
 ### Slice 208: Compound Workflow Commands — Complete
 - Seven compound CLI commands: `cf concept`, `cf initiatives`, `cf arch <index>`, `cf plan <index>`, `cf slice <index>`, `cf tasks <index>`, `cf implement <index>`

@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerProjectTools } from './tools/projectTools.js';
+import { registerDetectTools } from './tools/detectTools.js';
 import { registerContextTools } from './tools/contextTools.js';
 import { registerStateTools } from './tools/stateTools.js';
 import { registerConfigTools } from './tools/configTools.js';
@@ -14,8 +15,8 @@ import { registerWorkflowTools } from './tools/workflowTools.js';
 import { registerWorktreeTools } from './tools/worktreeTools.js';
 import { registerVersionTool } from './tools/versionTool.js';
 import { registerGuideTools } from './tools/guideTools.js';
-import { registerAgentGuideTool } from './tools/agentGuideTool.js';
 import { registerAgentOnboardTool } from './tools/agentOnboardTool.js';
+import { registerAgentQuickstartTool } from './tools/agentQuickstartTool.js';
 
 const require = createRequire(import.meta.url);
 const { version: SERVER_VERSION } = require('../package.json') as { version: string };
@@ -33,9 +34,10 @@ async function main(): Promise<void> {
 
   // Registration order matters — some MCP clients truncate tool lists.
   // High-priority tools first to maximize usability on limited clients.
-  registerAgentGuideTool(server);       // orientation for agents
   registerAgentOnboardTool(server);     // onboarding recipe for new projects
+  registerAgentQuickstartTool(server, SERVER_VERSION); // structured schema for machine consumers
   registerProjectTools(server, SERVER_VERSION); // core: list, get, create, update
+  registerDetectTools(server);          // judge a directory, registered or not
   registerWorkflowTools(server);        // what to do next
   registerContextTools(server);         // build prompts
   registerGuideTools(server);           // install/check guides

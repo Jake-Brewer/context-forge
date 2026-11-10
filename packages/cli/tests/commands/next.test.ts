@@ -5,18 +5,26 @@ import { registerNextCommand } from '../../src/commands/next.js';
 const mockGetAll = vi.fn();
 const mockGetById = vi.fn();
 const mockGetNext = vi.fn();
+const mockNavigatorCtor = vi.fn();
+const mockConfigManagerCtor = vi.fn();
 
 vi.mock('@context-forge/core/node', () => ({
+  // No adoption artifacts on disk: registerAdoptedArtifacts (#137) finds nothing to set.
+  readAdoptionArtifacts: vi.fn().mockResolvedValue({ concept: null, derivedArchitectures: [], existingStatePlan: null }),
+  upstreamLag: vi.fn().mockResolvedValue(null),
+  formatUpstreamLagWarning: vi.fn(),
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getAll: mockGetAll,
     getById: mockGetById,
   })),
-  WorkflowNavigator: vi.fn().mockImplementation(() => ({
-    getNext: mockGetNext,
-  })),
-  ConfigManager: vi.fn().mockImplementation(() => ({
-    get: vi.fn().mockResolvedValue({ value: '' }),
-  })),
+  WorkflowNavigator: vi.fn().mockImplementation((...args: unknown[]) => {
+    mockNavigatorCtor(...args);
+    return { getNext: mockGetNext };
+  }),
+  ConfigManager: vi.fn().mockImplementation((...args: unknown[]) => {
+    mockConfigManagerCtor(...args);
+    return { get: vi.fn().mockResolvedValue({ value: '' }) };
+  }),
 }));
 
 const sampleProject = {
@@ -98,5 +106,116 @@ describe('cf next', () => {
     const parsed = JSON.parse(raw);
     expect(parsed.recommendation).toBeDefined();
     expect(parsed.slice).toBe('100-slice.auth');
+  });
+
+  describe('offers', () => {
+    const baseAction = {
+      recommendation: 'Continue implementation — 2 tasks remaining',
+      rationale: 'In progress.',
+      suggestedCommand: 'cf build',
+      summary: 'Continue',
+    };
+    const offer = { id: 'setup-ci', message: 'No CI detected for this project.' };
+
+    it('prints one Offer line after Run', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetNext.mockResolvedValue({ ...baseAction, offers: [offer] });
+
+      await createProgram().parseAsync(['node', 'cf', 'next', '--project', 'proj_001']);
+
+      const lines = vi.mocked(console.log).mock.calls.map((c) => String(c[0]));
+      const offerLines = lines.filter((l) => l.includes('Offer:'));
+      expect(offerLines).toHaveLength(1);
+      expect(offerLines[0]).toContain(offer.message);
+      expect(lines.findIndex((l) => l.includes('Offer:'))).toBeGreaterThan(lines.findIndex((l) => l.includes('Run:')));
+    });
+
+    it('prints no Offer line without offers', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetNext.mockResolvedValue(baseAction);
+
+      await createProgram().parseAsync(['node', 'cf', 'next', '--project', 'proj_001']);
+
+      const output = vi.mocked(console.log).mock.calls.map((c) => c[0]).join('\n');
+      expect(output).not.toContain('Offer:');
+    });
+
+    it('includes offers in --json output', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetNext.mockResolvedValue({ ...baseAction, offers: [offer] });
+
+      await createProgram().parseAsync(['node', 'cf', 'next', '--project', 'proj_001', '--json']);
+
+      const parsed = JSON.parse(vi.mocked(process.stdout.write).mock.calls[0]?.[0] as string);
+      expect(parsed.offers).toEqual([offer]);
+    });
+  });
+
+  describe('pending decisions', () => {
+    const pendingAction = {
+      recommendation: 'Blocked: design has pending PM decisions',
+      rationale: 'Slice 100 design has 2 decisions pending PM confirmation.',
+      slice: '100-slice.auth',
+      summary: 'Blocked — slice 100 has 2 pending PM decisions',
+      pendingDecisions: [
+        { heading: 'D1 — First', line: 12 },
+        { heading: 'D2 — Second', line: 40 },
+      ],
+    };
+
+    it('lists each decision under the rationale', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetNext.mockResolvedValue(pendingAction);
+
+      await createProgram().parseAsync(['node', 'cf', 'next', '--project', 'proj_001']);
+
+      const lines = vi.mocked(console.log).mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('  - D1 — First (line 12)'))).toBe(true);
+      expect(lines.some((l) => l.includes('  - D2 — Second (line 40)'))).toBe(true);
+    });
+
+    it('--json includes pendingDecisions', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetNext.mockResolvedValue(pendingAction);
+
+      await createProgram().parseAsync(['node', 'cf', 'next', '--project', 'proj_001', '--json']);
+
+      const parsed = JSON.parse(vi.mocked(process.stdout.write).mock.calls[0]?.[0] as string);
+      expect(parsed.pendingDecisions).toEqual(pendingAction.pendingDecisions);
+    });
+
+    it('prints no decision lines when nothing is pending', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetNext.mockResolvedValue({
+        recommendation: 'Continue implementation — 2 tasks remaining',
+        rationale: 'In progress.',
+        summary: 'Continue',
+      });
+
+      await createProgram().parseAsync(['node', 'cf', 'next', '--project', 'proj_001']);
+
+      const lines = vi.mocked(console.log).mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('(line '))).toBe(false);
+    });
+  });
+
+  it('constructs ConfigManager at project path and passes it to WorkflowNavigator, surfacing a blocked recommendation end-to-end', async () => {
+    mockGetById.mockResolvedValue(sampleProject);
+    mockGetNext.mockResolvedValue({
+      recommendation: 'Blocked: review verdict does not clear threshold',
+      rationale: "Review artifact present but verdict FAIL does not clear threshold 'concerns' for slice 100.",
+      slice: '100-slice.auth',
+      summary: 'Blocked — slice 100 review does not clear',
+    });
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'next', '--project', 'proj_001']);
+
+    expect(mockConfigManagerCtor).toHaveBeenCalledWith(sampleProject.projectPath);
+    expect(mockNavigatorCtor).toHaveBeenCalledWith(expect.objectContaining({ get: expect.any(Function) }));
+
+    const output = vi.mocked(console.log).mock.calls.map((c) => c[0]).join('\n');
+    expect(output).toContain('Blocked');
+    expect(output).toContain('does not clear threshold');
   });
 });

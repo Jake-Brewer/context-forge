@@ -1,6 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { Command } from 'commander';
-import { registerProjectCommand } from '../../src/commands/project.js';
+import { registerProjectCommand, resolveSetValue } from '../../src/commands/project.js';
+import { normalizeArtifactValue } from '../../../core/src/schema/normalizeArtifactValue.js';
 
 const mockGetAll = vi.fn();
 const mockGetById = vi.fn();
@@ -12,7 +16,9 @@ const mockUpdateWorktree = vi.fn();
 
 const mockComputeAutoSetFields = vi.fn().mockReturnValue({ derivedUpdates: {}, descriptions: [] });
 
-vi.mock('@context-forge/core/node', () => ({
+vi.mock('@context-forge/core/node', async () => ({
+  // The real path check, so cf set exercises actual files (hoisting needs the lazy import).
+  ...(await import('../../../core/src/adoption/codebaseReference.js')),
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getAll: mockGetAll,
     getById: mockGetById,
@@ -26,6 +32,7 @@ vi.mock('@context-forge/core/node', () => ({
     updateWorktree: mockUpdateWorktree,
   })),
   resolveFileByIndex: (...args: unknown[]) => mockResolveFileByIndex(...args),
+  normalizeArtifactValue: (value: string) => normalizeArtifactValue(value),
   computeAutoSetFields: (...args: unknown[]) => mockComputeAutoSetFields(...args),
 }));
 
@@ -250,7 +257,8 @@ describe('cf project set', () => {
   });
 
   it('resolves phase number and auto-sets instruction', async () => {
-    mockGetById.mockResolvedValue(sampleProject);
+    // Use project with a different phase to avoid idempotency short-circuit
+    mockGetById.mockResolvedValue({ ...sampleProject, developmentPhase: 'Phase 4: Slice Design' });
     mockComputeAutoSetFields.mockReturnValue({
       derivedUpdates: { instruction: 'Phase 6: Implementation' },
       descriptions: ['instruction = Phase 6: Implementation (auto-set from developmentPhase)'],
@@ -288,7 +296,8 @@ describe('cf project set', () => {
   });
 
   it('resolves case-insensitive field names', async () => {
-    mockGetById.mockResolvedValue(sampleProject);
+    // Use project with a different phase to avoid idempotency short-circuit
+    mockGetById.mockResolvedValue({ ...sampleProject, developmentPhase: 'Phase 4: Slice Design' });
     mockComputeAutoSetFields.mockReturnValueOnce({
       derivedUpdates: { instruction: 'Phase 6: Implementation' },
       descriptions: ['instruction'],
@@ -315,8 +324,9 @@ describe('cf project set', () => {
       '--project', 'proj_001',
     ]);
 
+    // Full paths are normalized to bare stem (directory stripped, .md removed)
     expect(mockUpdate).toHaveBeenCalledWith('proj_001', {
-      fileArch: 'some/path.md',
+      fileArch: 'path',
     });
   });
 
@@ -389,6 +399,46 @@ describe('cf project --schema', () => {
   });
 });
 
+describe('cf project set — idempotency', () => {
+  let stderrData: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stderrData = '';
+    mockGetAll.mockResolvedValue([sampleProject]);
+    mockGetById.mockResolvedValue(sampleProject);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stderrData += String(chunk);
+      return true;
+    });
+  });
+
+  it('skips write when value is already set', async () => {
+    const program = createProgram();
+    await program.parseAsync([
+      'node', 'cf', 'project', 'set', 'fileSlice', '100-slice.auth',
+      '--project', 'proj_001',
+    ]);
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(stderrData).toContain('already set');
+  });
+
+  it('proceeds with write when value differs', async () => {
+    const program = createProgram();
+    await program.parseAsync([
+      'node', 'cf', 'project', 'set', 'fileSlice', '200-slice.new',
+      '--project', 'proj_001',
+    ]);
+
+    expect(mockUpdate).toHaveBeenCalled();
+    expect(stderrData).not.toContain('already set');
+  });
+});
+
 describe('cf project set — auto-set fileTasks from fileSlice', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -412,9 +462,9 @@ describe('cf project set — auto-set fileTasks from fileSlice', () => {
       '--project', 'proj_001',
     ]);
 
-    // Single update with both primary and derived fields
+    // .md suffix is normalized away before storage
     expect(mockUpdate).toHaveBeenCalledWith('proj_001', {
-      fileSlice: '200-slice.new-feature.md',
+      fileSlice: '200-slice.new-feature',
       fileTasks: '200-tasks.new-feature.md',
     });
     const output = vi.mocked(process.stderr.write).mock.calls.map((c) => String(c[0])).join('');
@@ -434,10 +484,10 @@ describe('cf project set — auto-set fileTasks from fileSlice', () => {
       '--project', 'proj_001',
     ]);
 
-    // Single merged update
+    // .md suffix is normalized away before storage
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdate).toHaveBeenCalledWith('proj_001', {
-      fileSlice: '999-slice.no-tasks.md',
+      fileSlice: '999-slice.no-tasks',
       fileTasks: '999-tasks.no-tasks.md',
     });
   });
@@ -453,8 +503,9 @@ describe('cf project set — auto-set fileTasks from fileSlice', () => {
       '--project', 'proj_001',
     ]);
 
+    // .md suffix is normalized away before storage
     expect(mockUpdate).toHaveBeenCalledTimes(1);
-    expect(mockUpdate).toHaveBeenCalledWith('proj_001', { fileTasks: '200-tasks.new.md' });
+    expect(mockUpdate).toHaveBeenCalledWith('proj_001', { fileTasks: '200-tasks.new' });
   });
 });
 
@@ -551,6 +602,7 @@ describe('cf project set — worktree path resolution', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process, 'cwd').mockReturnValue('/repos/api');
   });
 
@@ -571,7 +623,7 @@ describe('cf project set — worktree path resolution', () => {
     const { projectSetAction } = await import('../../src/commands/project.js');
     await projectSetAction('arch', '100', {});
 
-    expect(console.warn).toHaveBeenCalledWith(
+    expect(process.stderr.write).toHaveBeenCalledWith(
       expect.stringContaining('outside this worktree\'s range [300-499]'),
     );
   });
@@ -711,5 +763,99 @@ describe('cf project unset', () => {
 
     const output = vi.mocked(console.log).mock.calls.map((c) => c[0]).join('\n');
     expect(output).toContain('Usage');
+  });
+});
+
+describe('cf set comprehension — path-valued field', () => {
+  const DOC = 'project-documents/user/analysis/700-analysis.comprehension.md';
+  let root: string;
+  let outsideFile: string;
+  let stderr: ReturnType<typeof vi.spyOn>;
+
+  function touch(file: string): void {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, '# doc\n');
+  }
+
+  async function setComprehension(value: string): Promise<void> {
+    await createProgram().parseAsync([
+      'node', 'cf', 'project', 'set', 'comprehension', value, '--project', 'proj_001',
+    ]);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const base = mkdtempSync(join(tmpdir(), 'cf-set-comprehension-'));
+    root = join(base, 'root');
+    outsideFile = join(base, 'outside.md');
+    touch(join(root, DOC));
+    touch(outsideFile);
+    mockGetAll.mockResolvedValue([{ ...sampleProject, projectPath: root }]);
+    mockGetById.mockResolvedValue({ ...sampleProject, projectPath: root });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    rmSync(dirname(root), { recursive: true, force: true });
+    stderr.mockRestore();
+  });
+
+  it('stores an absolute input root-relative', async () => {
+    await setComprehension(join(root, DOC));
+    expect(mockUpdate).toHaveBeenCalledWith('proj_001', { fileComprehension: DOC });
+  });
+
+  it('stores a relative input as given, with / separators', async () => {
+    await setComprehension(DOC);
+    expect(mockUpdate).toHaveBeenCalledWith('proj_001', { fileComprehension: DOC });
+  });
+
+  it('does not reduce the value to a bare name or print artifact warnings', async () => {
+    await setComprehension(DOC);
+    const written = stderr.mock.calls.map((call) => String(call[0])).join('');
+    expect(written).not.toContain('valid artifact value');
+    expect(written).not.toContain('Normalized');
+    expect(mockResolveFileByIndex).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a missing path', 'no/such/file.md', 'does not exist'],
+    ['a directory', 'project-documents/user/analysis', 'is a directory'],
+    ['a path outside the root', '../outside.md', 'outside the project root'],
+  ])('%s is refused and nothing is stored', async (_label, input, message) => {
+    await setComprehension(input);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining(message));
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('the empty string clears the field', async () => {
+    await setComprehension('');
+    expect(mockUpdate).toHaveBeenCalledWith('proj_001', { fileComprehension: '' });
+  });
+});
+
+describe('resolveSetValue', () => {
+  it('returns the value as given', () => {
+    expect(resolveSetValue('slice', '200-slice.new')).toBe('200-slice.new');
+  });
+
+  it('maps a bare date field to now', () => {
+    expect(resolveSetValue('date', undefined)).toBe('now');
+    expect(resolveSetValue('dateProject', '')).toBe('now');
+  });
+
+  it('has no value for a missing or empty value on an ordinary field', () => {
+    expect(resolveSetValue('slice', undefined)).toBeUndefined();
+    expect(resolveSetValue('slice', '')).toBeUndefined();
+    expect(resolveSetValue(undefined, 'x')).toBe('x');
+  });
+
+  it('keeps an empty value only for a path-valued field, where it clears the path', () => {
+    expect(resolveSetValue('comprehension', '')).toBe('');
+    expect(resolveSetValue('fileComprehension', '')).toBe('');
   });
 });

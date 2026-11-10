@@ -44,16 +44,37 @@ describe('TemplateProcessor', () => {
       expect(result).toBe('100-slice.auth');
     });
 
-    it('returns expression as-is when pipe variable not found', () => {
+    it('preserves the literal braces when pipe variable not found', () => {
       const data = createTestContextData();
       const result = processor.processTemplate('{unknownVar | fallback}', data);
-      expect(result).toBe('unknownVar | fallback');
+      expect(result).toBe('{unknownVar | fallback}');
     });
 
-    it('returns expression as-is for unrecognized single-brace vars', () => {
+    it('preserves literal braces for unrecognized single-brace text', () => {
       const data = createTestContextData();
       const result = processor.processTemplate('{param}', data);
-      expect(result).toBe('param');
+      expect(result).toBe('{param}');
+    });
+
+    it('leaves literal {example} verbatim while substituting real vars (GH #13)', () => {
+      const data = createTestContextData({ projectName: 'context-forge' });
+      const result = processor.processTemplate('Use {example} in {project}.', data);
+      expect(result).toBe('Use {example} in context-forge.');
+    });
+
+    it('preserves literal braces in realistic multi-line project state (GH #13)', () => {
+      const data = createTestContextData({ projectName: 'context-forge' });
+      const projectState = [
+        '## Project State',
+        '',
+        'Working on {project}. The config accepts a literal',
+        'placeholder like {example} and a JSON snippet {"key": "value"}',
+        'that must survive verbatim in the generated context.',
+      ].join('\n');
+      const result = processor.processTemplate(projectState, data);
+      expect(result).toContain('Working on context-forge.');
+      expect(result).toContain('{example}');
+      expect(result).toContain('{"key": "value"}');
     });
   });
 
@@ -195,6 +216,23 @@ describe('TemplateProcessor', () => {
     });
   });
 
+  describe('processTemplate — branch variables (#70)', () => {
+    it('resolves {targetBranch} and {integrationBranch}', () => {
+      const data = createTestContextData({ integrationBranch: 'dev/erik', targetBranch: 'dev/erik' });
+      expect(processor.processTemplate('{targetBranch} {integrationBranch}', data)).toBe('dev/erik dev/erik');
+    });
+
+    it('renders a {{#if targetBranch}} block when set', () => {
+      const data = createTestContextData({ targetBranch: 'main' });
+      expect(processor.processTemplate('{{#if targetBranch}}target: {targetBranch}{{/if}}', data)).toBe('target: main');
+    });
+
+    it('renders a {{#if targetBranch}} block as empty when the variable is absent (older callers)', () => {
+      const data = createTestContextData({});
+      expect(processor.processTemplate('a{{#if targetBranch}}target: {targetBranch}{{/if}}b', data)).toBe('ab');
+    });
+  });
+
   describe('processTemplate — worktree aliases', () => {
     it('resolves {worktreeName} when worktree data is present', () => {
       const data = createTestContextData({ worktreeName: 'world-server' });
@@ -236,9 +274,10 @@ describe('TemplateProcessor', () => {
 
     it('does not create worktreeRange when worktreeIndexStart is undefined', () => {
       const data = createTestContextData();
-      // When no worktree data, {worktreeRange} should resolve to the expression (no alias created)
+      // When no worktree data, {worktreeRange} has no alias, so the literal
+      // text is preserved verbatim (braces intact).
       const result = processor.processTemplate('{worktreeRange}', data);
-      expect(result).toBe('worktreeRange');
+      expect(result).toBe('{worktreeRange}');
     });
   });
 

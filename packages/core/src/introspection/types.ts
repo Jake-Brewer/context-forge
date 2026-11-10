@@ -1,5 +1,24 @@
+import type { ExemptReason } from './reviewGate.js';
+import type { PendingDecision } from '../schema/pendingDecisions.js';
+
 /** Normalized status values used across introspection results */
-export type NormalizedStatus = 'complete' | 'in-progress' | 'not-started' | 'deprecated';
+export const STATUS = {
+  Complete: 'complete',
+  InProgress: 'in_progress',
+  NotStarted: 'not_started',
+  Deprecated: 'deprecated',
+  Deferred: 'deferred',
+} as const;
+
+export type NormalizedStatus = (typeof STATUS)[keyof typeof STATUS];
+
+/**
+ * A derived status, or the TD-2a degraded case for a signal that exists but
+ * failed to resolve (e.g. an unrecognized frontmatter status value). Used
+ * wherever a per-entry resolution failure must not abort the whole caller —
+ * the entry is rendered/reported as degraded instead of throwing.
+ */
+export type DisplayStatus = NormalizedStatus | 'degraded';
 
 /** Result of parsing a single slice plan entry */
 export interface SlicePlanEntry {
@@ -9,6 +28,21 @@ export interface SlicePlanEntry {
   isChecked: boolean;
   /** Zero-based line number in the source file (for checkbox fix operations) */
   lineIndex: number;
+  /** Overview/description text from after the bold name (e.g., " — Summary text...") */
+  description?: string;
+  /**
+   * Whether `index` came from a bolded `(NNN)` in the source ('explicit') or was
+   * synthesized as a per-file sequential counter for unindexed entries ('fallback').
+   * Fallback indices are not stable across files and must not enter cross-plan
+   * aggregation (see ConsistencyChecker.checkAll()).
+   */
+  indexSource: 'explicit' | 'fallback';
+  /**
+   * True when an indexed entry carries the backticked `retroactive` marker: work that
+   * predates adoption, recorded as history (D1). Never set on 'fallback' entries.
+   * The marker says nothing about completion; the checkbox does (D2).
+   */
+  retroactive: boolean;
 }
 
 /** Result of parsing a slice plan document */
@@ -32,7 +66,7 @@ export interface TaskFileResult {
   totalTasks: number;
   completedTasks: number;
   /** Inferred status based on checkbox state */
-  inferredStatus: 'complete' | 'in-progress' | 'not-started';
+  inferredStatus: NormalizedStatus;
 }
 
 /** Extracted YAML frontmatter fields */
@@ -52,6 +86,8 @@ export interface FutureWorkItem {
   index: string;
   name: string;
   done: boolean;
+  /** Description text after the title (e.g., text after " — " or ": ") */
+  description?: string;
 }
 
 /** Result of future work section parsing */
@@ -66,6 +102,9 @@ export interface DocumentDetectionResult {
   taskFile: string[] | null;
   architecture: string | null;
   slicePlan: string | null;
+  review: string | null;
+  /** Split-review parts (`*.part-N.md`) in numeric part order; empty when the review is unsplit (#106). */
+  reviewParts: string[];
 }
 
 // --- ProjectModel types (for buildModel output, matching parse.py) ---
@@ -77,6 +116,8 @@ export interface DocSummary {
   status: string;
   dateCreated?: string;
   dateUpdated?: string;
+  /** Overview or description text extracted from the document body */
+  description?: string;
 }
 
 /** Foundation band entry (index 000-009) */
@@ -115,13 +156,24 @@ export interface SlicePlanBlock extends DocSummary {
   futureWork: FutureWorkItem[];
 }
 
-/** An initiative (base index in 100-799 with arch/slices doc) */
+/**
+ * An initiative. Normally a base index in 100-799 backed by an arch or slices
+ * doc. Initiatives that exist only in the initiative plan (named there but with
+ * no arch/slices file written yet) are also surfaced, carrying `status` and
+ * `description` from the plan entry and marked `planned`.
+ */
 export interface Initiative {
   name: string;
   slices: SliceModelEntry[];
   features: DocSummary[];
   arch?: DocSummary;
   slicePlan?: SlicePlanBlock;
+  /** Status from the initiative-plan entry. Set when no arch/slicePlan provides one. */
+  status?: string;
+  /** Overview/description text from the initiative-plan entry. */
+  description?: string;
+  /** True when the initiative exists only in the plan (no arch/slices doc yet). */
+  planned?: true;
 }
 
 /** Standalone feature not claimed by any slice */
@@ -142,6 +194,7 @@ export interface ProjectModel {
   foundation: FoundationEntry[];
   projectArchitecture: ArchEntry[];
   initiatives: Record<string, Initiative>;
+  maintenanceInitiatives: Record<string, Initiative>;
   futureSlices: FutureSliceEntry[];
   quality: DocSummary[];
   investigation: DocSummary[];
@@ -187,6 +240,20 @@ export interface FutureWorkCollectorResult {
 /** Severity level for consistency findings */
 export type ConsistencySeverity = 'info' | 'warning' | 'error';
 
+/**
+ * Which checkout a finding came from.
+ *
+ * Structured, never encoded into `description` — a user-visible label is not
+ * logical structure. Absent for single-checkout projects and for any producer
+ * that does not run per-worktree.
+ */
+export interface FindingWorktree {
+  id: string;
+  name: string;
+  /** The worktree's path, when one is registered. */
+  path?: string;
+}
+
 /** A single consistency finding from a detection rule */
 export interface ConsistencyFinding {
   rule: string;
@@ -196,10 +263,24 @@ export interface ConsistencyFinding {
   suggestedFix: string;
   fixable: boolean;
   fixAction?: {
-    type: 'update-checkbox' | 'update-frontmatter';
+    type: 'update-checkbox' | 'update-frontmatter' | 'archive-devlog';
     filePath: string;
+    /**
+     * Further files the fix writes besides `filePath` (absolute paths). Absent
+     * for single-file fixes, which behave exactly as before (slice 936 D9).
+     */
+    additionalPaths?: string[];
     detail: Record<string, unknown>;
+    /**
+     * Index of the document or plan entry this fix is about — the fix's
+     * subject, which decides which checkout owns it (slice 213 D1). Set from
+     * a parsed index field by the rule, never parsed from a label. `null` when
+     * the subject has no index (e.g. an unindexed filename).
+     */
+    subjectIndex: number | null;
   };
+  /** The worktree whose view produced this finding. Attached before the merge. */
+  worktree?: FindingWorktree;
 }
 
 /** Result of running all consistency checks on a project */
@@ -216,11 +297,48 @@ export interface ConsistencyCheckResult {
 /** Log entry for a single applied fix */
 export interface FixLogEntry {
   rule: string;
-  action: 'update-checkbox' | 'update-frontmatter';
+  action: 'update-checkbox' | 'update-frontmatter' | 'archive-devlog';
   filePath: string;
+  /** Further files the fix wrote (absolute paths); absent for single-file fixes. */
+  additionalPaths?: string[];
   field?: string;
   before: string;
   after: string;
+  /** The checkout the fix was written in. Present only with 2+ worktrees. */
+  worktree?: FindingWorktree;
+}
+
+/** Why a fixable finding was not written (slice 213 D6). */
+export const DeferReason = {
+  NOT_OWNER: 'not-owner',
+  OWNER_UNRESOLVED: 'owner-unresolved',
+  NOT_A_CHECKOUT: 'not-a-checkout',
+  FILE_DIRTY: 'file-dirty',
+  CHECKOUT_BUSY: 'checkout-busy',
+  DETACHED_HEAD: 'detached-head',
+  COMMIT_FAILED: 'commit-failed',
+  READINESS_FAILED: 'readiness-failed',
+} as const;
+
+export type DeferReasonValue = (typeof DeferReason)[keyof typeof DeferReason];
+
+/** A fixable finding that was left unwritten, with the reason. */
+export interface DeferredFix {
+  finding: ConsistencyFinding;
+  reason: DeferReasonValue;
+  /** The checkout that owns the fix's subject (NOT_OWNER). */
+  owner?: FindingWorktree;
+  /** Git's error text (COMMIT_FAILED, READINESS_FAILED). */
+  detail?: string;
+}
+
+/** A commit made into a non-invoking checkout by a fix run. */
+export interface CheckoutCommit {
+  worktree?: FindingWorktree;
+  checkoutPath: string;
+  sha: string;
+  /** Committed paths, relative to `checkoutPath`. */
+  files: string[];
 }
 
 /** Result of running consistency checks with fix mode enabled */
@@ -228,6 +346,10 @@ export interface ConsistencyFixResult extends ConsistencyCheckResult {
   fixed: number;
   fixLog: FixLogEntry[];
   fixErrors: string[];
+  /** Fixes not written, with reasons. Always empty for single-checkout projects. */
+  deferred: DeferredFix[];
+  /** Commits made into non-invoking checkouts. Always empty for single-checkout projects. */
+  commits: CheckoutCommit[];
 }
 
 // --- WorkflowNavigator types ---
@@ -236,12 +358,36 @@ export interface ConsistencyFixResult extends ConsistencyCheckResult {
 export interface SliceStatus {
   name: string;
   index: number | null;
-  status: 'needs-design' | 'needs-tasks' | 'in-implementation' | 'complete' | 'no-active-slice';
+  status:
+    | 'needs-design'
+    | 'needs-tasks'
+    | 'in-implementation'
+    | 'complete'
+    | 'no-active-slice'
+    | 'pending-review'
+    | 'review-failed'
+    | 'pending-decision';
   taskProgress?: {
     completed: number;
     total: number;
     inferredStatus: NormalizedStatus;
   };
+  /** Present only when status is 'pending-decision': the design's undecided PM decisions. */
+  pendingDecisions?: PendingDecision[];
+  /** Set when gating is on and the slice is exempt from review (review-none only); getNext() appends its EXEMPT_NOTE to the rationale. */
+  gateExempt?: ExemptReason;
+  /** Set (only when true) when the active slice is a retroactive plan entry: recorded history, complete, never gated. */
+  retroactive?: boolean;
+  /** Set when status is 'pending-review' or 'review-failed'; carries the gate's rationale for getNext() to route without recomputing the gate. */
+  gateInfo?: {
+    reviewType: string;
+    rationale: string;
+  };
+}
+
+/** A slice-plan entry with its status resolved through the derivation lattice (TD-3). */
+export interface ResolvedSlicePlanEntry extends Omit<SlicePlanEntry, 'status'> {
+  status: DisplayStatus;
 }
 
 /** Full workflow status for a project */
@@ -253,9 +399,21 @@ export interface WorkflowStatus {
     name: string;
     completed: number;
     total: number;
-    entries: SlicePlanEntry[];
+    entries: ResolvedSlicePlanEntry[];
   } | null;
   summary: string;
+  /** Non-blocking warnings about entries that failed to resolve (TD-2a) — see DisplayStatus. */
+  warnings?: string[];
+}
+
+/** Stable id of the setup-ci offer. Consumers key on this, never on the message text. */
+export const SETUP_CI_OFFER_ID = 'setup-ci';
+
+/** An optional suggestion attached to a next action. It never displaces the recommendation. */
+export interface NextOffer {
+  /** Stable identifier; consumers key on this, never on `message`. */
+  id: string;
+  message: string;
 }
 
 /** Recommended next action from the workflow navigator */
@@ -266,6 +424,12 @@ export interface NextAction {
   slice?: string;
   phase?: string;
   summary: string;
+  /** Present only on the decision-gate action: the design's undecided PM decisions. Consumers key on this field, never on `recommendation` text. */
+  pendingDecisions?: PendingDecision[];
+  /** Non-blocking warnings about project configuration (e.g., index band mismatches) */
+  warnings?: string[];
+  /** Optional, non-blocking suggestions (e.g. the setup-ci offer). Present on any result, including gate-blocked ones. */
+  offers?: NextOffer[];
 }
 
 /** Introspection summary suitable for enriching project_get */

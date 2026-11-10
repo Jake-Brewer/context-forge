@@ -1,15 +1,16 @@
 import { readdir, access } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { parseFrontmatter } from './parsers/frontmatterParser.js';
+import { extractOverview } from './parsers/overviewParser.js';
 import { parseTaskItems } from './parsers/taskFileParser.js';
 import { parseFutureWork } from './parsers/futureWorkParser.js';
 import { parseSlicePlan } from './parsers/slicePlanParser.js';
 import { normalizeStatus } from './parsers/statusNormalizer.js';
+import { deriveEntryStatus } from './statusDerivation.js';
+import { resolveInitiativePlanPath } from './ArtifactIntrospector.js';
 import type {
   TaskItem,
   ProjectModel,
-  FoundationEntry,
-  ArchEntry,
   Initiative,
   SliceModelEntry,
   TaskModelEntry,
@@ -17,7 +18,10 @@ import type {
   DocSummary,
   FutureSliceEntry,
   MaintenanceEntry,
+  NormalizedStatus,
 } from './types.js';
+import { STATUS } from './types.js';
+import { DEVLOG_FILE } from '../devlog/archiveDevlog.js';
 
 /** Deduplicate DocSummary-like arrays by name field (first wins). */
 function dedupeByName<T extends { name: string }>(items: T[]): T[] {
@@ -43,6 +47,7 @@ export function mergeProjectModels(models: ProjectModel[]): ProjectModel {
     foundation: [],
     projectArchitecture: [],
     initiatives: {},
+    maintenanceInitiatives: {},
     futureSlices: [],
     quality: [],
     investigation: [],
@@ -61,6 +66,11 @@ export function mergeProjectModels(models: ProjectModel[]): ProjectModel {
     for (const [key, init] of Object.entries(model.initiatives)) {
       if (!merged.initiatives[key]) {
         merged.initiatives[key] = init;
+      }
+    }
+    for (const [key, init] of Object.entries(model.maintenanceInitiatives)) {
+      if (!merged.maintenanceInitiatives[key]) {
+        merged.maintenanceInitiatives[key] = init;
       }
     }
   }
@@ -164,12 +174,21 @@ export async function scanDirectory(userDir: string): Promise<DocEntry[]> {
 
       // Parse frontmatter
       const fm = await parseFrontmatter(filepath);
-      const status = normalizeStatus(fm.data.status);
+      // A malformed/unrecognized status must surface visibly, not be
+      // silently coerced to 'not-started' (TD-2a) — this is a bulk scan,
+      // so one bad doc degrades to 'unknown' rather than aborting the model.
+      const status = normalizeStatus(fm.data.status) ?? 'unknown';
 
       // Parse task items for task docs
       let taskItems: TaskItem[] = [];
       if (docType === 'tasks') {
         taskItems = await parseTaskItems(filepath);
+      }
+
+      // Extract overview paragraph for arch docs (used as description in model)
+      let description = fm.data.description || undefined;
+      if (!description && docType === 'arch') {
+        description = await extractOverview(filepath);
       }
 
       docs.push({
@@ -183,7 +202,7 @@ export async function scanDirectory(userDir: string): Promise<DocEntry[]> {
         dateUpdated: fm.data.dateUpdated || undefined,
         project: fm.data.project || undefined,
         parent: fm.data.parent || undefined,
-        description: fm.data.description || undefined,
+        description,
         taskItems,
         splitNum,
       });
@@ -207,6 +226,7 @@ function toDocSummary(doc: DocEntry): DocSummary {
   };
   if (doc.dateCreated) result.dateCreated = doc.dateCreated;
   if (doc.dateUpdated) result.dateUpdated = doc.dateUpdated;
+  if (doc.description) result.description = doc.description;
   return result;
 }
 
@@ -226,12 +246,28 @@ function buildTaskEntry(taskDocs: DocEntry[]): TaskModelEntry {
   const taskCount = allItems.length;
   const completedTasks = allItems.filter((t) => t.done).length;
 
-  // Infer status from checkboxes if frontmatter says not-started
-  let status = first.status;
-  if (status === 'not-started' && taskCount > 0) {
-    if (completedTasks === taskCount) status = 'complete';
-    else if (completedTasks > 0) status = 'in-progress';
+  // Task doc's own frontmatter status. scanDirectory sets DocEntry.status to
+  // either normalizeStatus()'s result or the literal 'unknown' (TD-2a) — never
+  // any other raw string — so once 'unknown' is excluded, the remainder is a
+  // genuine NormalizedStatus. 'unknown' is a resolution failure, not an absent
+  // signal, and is surfaced as-is below rather than fed into the lattice.
+  const frontmatterStatus: NormalizedStatus | undefined =
+    first.status === 'unknown' ? undefined : (first.status as NormalizedStatus);
+
+  let taskInferredStatus: NormalizedStatus | undefined;
+  if (taskCount > 0) {
+    taskInferredStatus =
+      completedTasks === taskCount
+        ? STATUS.Complete
+        : completedTasks > 0
+          ? STATUS.InProgress
+          : STATUS.NotStarted;
   }
+
+  const status =
+    first.status === 'unknown'
+      ? 'unknown'
+      : deriveEntryStatus({ frontmatterStatus, taskInferredStatus, isChecked: false });
 
   const entry: TaskModelEntry = {
     index: pad(first.index),
@@ -267,6 +303,7 @@ export async function buildModel(
     foundation: [],
     projectArchitecture: [],
     initiatives: {},
+    maintenanceInitiatives: {},
     futureSlices: [],
     quality: [],
     investigation: [],
@@ -275,7 +312,7 @@ export async function buildModel(
   };
 
   // Check DEVLOG.md at project root
-  model.devlog = await fileExists(join(projectPath, 'DEVLOG.md'));
+  model.devlog = await fileExists(join(projectPath, DEVLOG_FILE));
 
   // --- Foundation band (000-009) ---
   const foundationTypes = new Set(['concept', 'spec', 'hld', 'slices']);
@@ -286,7 +323,7 @@ export async function buildModel(
   model.foundation = foundationDocs.map((d) => ({
     ...toDocSummary(d),
     type: d.docType,
-  })) as FoundationEntry[];
+  }));
 
   // --- Project architecture band (050-099) ---
   const archTypes = new Set(['arch', 'hld']);
@@ -296,14 +333,14 @@ export async function buildModel(
 
   model.projectArchitecture = projArchDocs.map((d) => ({
     ...toDocSummary(d),
-    type: (d.name.includes('hld') || d.docType === 'hld' ? 'hld' : 'arch') as 'hld' | 'arch',
-  })) as ArchEntry[];
+    type: (d.name.includes('hld') || d.docType === 'hld' ? 'hld' : 'arch'),
+  }));
 
-  // --- Initiative bands (100-799) ---
+  // --- Initiative bands (100+, including 900+ maintenance initiatives) ---
   // Identify base indices from arch or slices docs
   const baseIndices = new Set<number>();
   for (const d of docs) {
-    if (d.index >= 100 && d.index <= 799 && (d.docType === 'arch' || d.docType === 'slices')) {
+    if (d.index >= 100 && (d.docType === 'arch' || d.docType === 'slices')) {
       baseIndices.add(d.index);
     }
   }
@@ -312,7 +349,7 @@ export async function buildModel(
 
   for (let i = 0; i < sortedBases.length; i++) {
     const base = sortedBases[i];
-    const upper = i + 1 < sortedBases.length ? sortedBases[i + 1] : 800;
+    const upper = i + 1 < sortedBases.length ? sortedBases[i + 1] : Infinity;
 
     const archDoc = docs.find((d) => d.index === base && d.docType === 'arch');
     const slicesDoc = docs.find((d) => d.index === base && d.docType === 'slices');
@@ -379,7 +416,7 @@ export async function buildModel(
     const sliceIndices = new Set<number>(bandSlices.map((s) => s.index));
 
     for (const sliceDoc of bandSlices) {
-      const entry: SliceModelEntry = toDocSummary(sliceDoc) as SliceModelEntry;
+      const entry: SliceModelEntry = toDocSummary(sliceDoc);
 
       // Attach tasks
       const tasks = tasksByIndex.get(sliceDoc.index);
@@ -396,13 +433,15 @@ export async function buildModel(
       initiative.slices.push(entry);
     }
 
-    // Fill planned-but-unwritten slices from slice plan main body (matching parse.py)
+    // Fill planned-but-unwritten slices from slice plan main body (matching parse.py).
+    // No slice doc exists yet, so neither a task nor frontmatter signal is
+    // available — deriveEntryStatus degrades to the checkbox branch, same as before.
     for (const entry of planEntries) {
       if (entry.index >= base && entry.index < upper && !sliceIndices.has(entry.index)) {
         initiative.slices.push({
           index: pad(entry.index),
           name: entry.name,
-          status: entry.isChecked ? 'complete' : 'not-started',
+          status: deriveEntryStatus({ isChecked: entry.isChecked }),
           planned: true,
         });
       }
@@ -426,6 +465,41 @@ export async function buildModel(
     model.initiatives[pad(base)] = initiative;
   }
 
+  // --- Plan-only initiatives ---
+  // The initiative plan is the authoritative roadmap: it names initiatives
+  // before any arch or slices doc exists. Surface those so the model reflects
+  // what is planned, not just what has been started. The plan uses the same
+  // `N. [ ] **(NNN) Name** — overview` entry format as a slice plan. Entries at
+  // 900+ flow into maintenanceInitiatives via the partition below, matching the
+  // arch/slices loop (which also has no upper bound).
+  const planPath = await resolveInitiativePlanPath(projectPath);
+  if (planPath) {
+    const { entries } = await parseSlicePlan(planPath);
+    for (const entry of entries) {
+      if (entry.index < 100) continue; // foundation/project-arch bands are not initiatives
+      const key = pad(entry.index);
+      if (model.initiatives[key]) continue; // arch/slices doc already produced it
+      const initiative: Initiative = {
+        name: titleCase(entry.name),
+        slices: [],
+        features: [],
+        status: entry.status,
+        planned: true,
+      };
+      if (entry.description) initiative.description = entry.description;
+      model.initiatives[key] = initiative;
+    }
+  }
+
+  // --- Partition 900+ initiatives into maintenanceInitiatives ---
+  model.maintenanceInitiatives = {};
+  for (const [key, init] of Object.entries(model.initiatives)) {
+    if (parseInt(key, 10) >= 900) {
+      model.maintenanceInitiatives[key] = init;
+      delete model.initiatives[key];
+    }
+  }
+
   // --- Operational band (900+) ---
   // Quality: review docs 900+
   model.quality = docs
@@ -439,7 +513,7 @@ export async function buildModel(
     .sort((a, b) => a.index - b.index)
     .map(toDocSummary);
 
-  // Maintenance: tasks docs 900+
+  // Maintenance: flat task list from 900+ (backward compat)
   model.maintenance = docs
     .filter((d) => d.index >= 900 && d.docType === 'tasks')
     .sort((a, b) => a.index - b.index)

@@ -1,0 +1,575 @@
+import { describe, it, expect } from 'vitest';
+import {
+  FRONTMATTER_SCHEMAS,
+  VALID_STATUSES,
+  validateFrontmatter,
+  inferDocTypeFromPath,
+  inferFieldsFromPath,
+} from '../../src/schema/frontmatterSchema.js';
+import { STATUS } from '../../src/introspection/types.js';
+
+/** The 8 canonical docTypes from file-naming-conventions.md */
+const EXPECTED_DOC_TYPES = [
+  'concept',
+  'initiative-plan',
+  'architecture',
+  'slice-plan',
+  'slice-design',
+  'tasks',
+  'review',
+  'analysis',
+];
+
+describe('FRONTMATTER_SCHEMAS', () => {
+  it('has an entry for every canonical docType', () => {
+    for (const dt of EXPECTED_DOC_TYPES) {
+      expect(FRONTMATTER_SCHEMAS[dt]).toBeDefined();
+    }
+  });
+
+  it('every canonical docType schema requires docType, status, dateCreated, dateUpdated', () => {
+    const universalFields = ['docType', 'status', 'dateCreated', 'dateUpdated'];
+    for (const docType of EXPECTED_DOC_TYPES) {
+      const schema = FRONTMATTER_SCHEMAS[docType];
+      for (const field of universalFields) {
+        expect(schema.fields[field], `${docType} missing ${field}`).toBeDefined();
+        expect(schema.fields[field].required, `${docType}.${field} not required`).toBe(true);
+      }
+    }
+  });
+
+  it('status field on every canonical docType schema uses VALID_STATUSES as values constraint', () => {
+    for (const docType of EXPECTED_DOC_TYPES) {
+      const statusField = FRONTMATTER_SCHEMAS[docType].fields.status;
+      expect(statusField.values, `${docType} status has no values constraint`).toBeDefined();
+      expect(statusField.values).toEqual([...VALID_STATUSES]);
+    }
+  });
+
+  it('squadron machine-artifact docTypes (#73) require only docType and dateCreated', () => {
+    for (const docType of ['review-resolution', 'gate-evidence', 'devlog']) {
+      const schema = FRONTMATTER_SCHEMAS[docType];
+      expect(schema, `${docType} missing from FRONTMATTER_SCHEMAS`).toBeDefined();
+      expect(Object.keys(schema.fields).sort()).toEqual(['dateCreated', 'docType']);
+      expect(schema.fields.docType.required).toBe(true);
+      expect(schema.fields.dateCreated.required).toBe(true);
+    }
+  });
+});
+
+describe('VALID_STATUSES', () => {
+  it('includes all 5 canonical status values', () => {
+    expect(VALID_STATUSES).toContain('not_started');
+    expect(VALID_STATUSES).toContain('in_progress');
+    expect(VALID_STATUSES).toContain('complete');
+    expect(VALID_STATUSES).toContain('deferred');
+    expect(VALID_STATUSES).toContain('deprecated');
+    expect(VALID_STATUSES).toHaveLength(5);
+  });
+
+  it('is equal as a set to Object.values(STATUS), pinning the single source of truth', () => {
+    expect(new Set(VALID_STATUSES)).toEqual(new Set(Object.values(STATUS)));
+  });
+});
+
+describe('validateFrontmatter', () => {
+  it('returns finding when docType is missing', () => {
+    const findings = validateFrontmatter('/test.md', {});
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain('docType');
+  });
+
+  it('returns no findings for unknown docType', () => {
+    const findings = validateFrontmatter('/test.md', { docType: 'custom-thing' });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('returns no findings for valid architecture frontmatter', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'architecture',
+      project: 'my-project',
+      status: 'in_progress',
+      archIndex: '140',
+      component: 'api-layer',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('returns findings for architecture missing project and status', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'architecture',
+      archIndex: '140',
+      component: 'api-layer',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(2);
+    const fields = findings.map((f) => f.description);
+    expect(fields.some((d) => d.includes("'project'"))).toBe(true);
+    expect(fields.some((d) => d.includes("'status'"))).toBe(true);
+  });
+
+  it('returns finding for invalid status value', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status: 'banana',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'banana'");
+    expect(findings[0].description).toContain('Invalid value');
+  });
+
+  it('rejects completed (alias) but offers a fixAction to complete', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status: 'completed',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'completed'");
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'status',
+      value: 'complete',
+    });
+  });
+
+  it('treats empty string as missing', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: '',
+      status: 'in_progress',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'project'");
+  });
+
+  it('rejects draft as an invalid status value (not a defined status)', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status: 'draft',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Invalid value 'draft'");
+  });
+
+  it.each([
+    ['done', 'complete'],
+    ['ready', 'not_started'],
+    ['pending', 'not_started'],
+    ['planned', 'not_started'],
+  ])(
+    'rejects alias %s but offers a fixAction to canonical %s (strict validate, lenient read)',
+    (alias, canonical) => {
+      const findings = validateFrontmatter('/test.md', {
+        docType: 'architecture',
+        project: 'test',
+        status: alias,
+        archIndex: '140',
+        component: 'api-layer',
+        dateCreated: '20260101',
+        dateUpdated: '20260301',
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toContain('Invalid value');
+      expect(findings[0].fixAction).toEqual({
+        type: 'update-frontmatter',
+        field: 'status',
+        value: canonical,
+      });
+    },
+  );
+
+  it('flags an architecture status that cf list arch would call "unreadable" (#63)', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'architecture',
+      project: 'test',
+      status: 'in-progres', // typo — not a recognized alias
+      archIndex: '140',
+      component: 'api-layer',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'in-progres'");
+    expect(findings[0].description).toContain('Invalid value');
+    // Close typo of a known alias — suggestStatus rescues it with a fixAction.
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'status',
+      value: 'in_progress',
+    });
+  });
+
+  it('includes fixAction for missing dateUpdated, defaulting to dateCreated', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status: 'in_progress',
+      dateCreated: '20260101',
+    });
+    const dateFinding = findings.find((f) => f.description.includes("'dateUpdated'"));
+    expect(dateFinding).toBeDefined();
+    expect(dateFinding!.fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'dateUpdated',
+      value: '20260101',
+    });
+  });
+
+  it('no fixAction for missing dateUpdated when dateCreated is also missing', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status: 'in_progress',
+    });
+    const dateFinding = findings.find((f) => f.description.includes("'dateUpdated'"));
+    expect(dateFinding).toBeDefined();
+    expect(dateFinding!.fixAction).toBeUndefined();
+  });
+
+  it.each([
+    ['in-progress', 'in_progress'],
+    ['not-started', 'not_started'],
+  ])(
+    'rejects %s as an invalid status value with a fixAction to canonical %s',
+    (hyphenated, canonical) => {
+      const findings = validateFrontmatter('/test.md', {
+        docType: 'concept',
+        project: 'test',
+        status: hyphenated,
+        dateCreated: '20260101',
+        dateUpdated: '20260301',
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toContain(`'${hyphenated}'`);
+      expect(findings[0].description).toContain('Invalid value');
+      expect(findings[0].fixAction).toEqual({
+        type: 'update-frontmatter',
+        field: 'status',
+        value: canonical,
+      });
+    },
+  );
+
+  it('rejects an unknown status value with no fixAction (not recoverable)', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status: 'backlog',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'backlog'");
+    expect(findings[0].fixAction).toBeUndefined();
+  });
+
+  it.each([...VALID_STATUSES])('accepts %s (canonical VALID_STATUSES value)', (status) => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      status,
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('includes fixAction for missing status', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'concept',
+      project: 'test',
+      dateCreated: '20260101',
+      dateUpdated: '20260301',
+    });
+    const statusFinding = findings.find((f) => f.description.includes("'status'"));
+    expect(statusFinding).toBeDefined();
+    expect(statusFinding!.fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'status',
+      value: 'not_started',
+    });
+  });
+
+  it('includes fixAction for missing docType when inferrable from filename', () => {
+    const findings = validateFrontmatter(
+      '/project/project-documents/user/slices/165-slice.test-feature.md',
+      { status: 'in_progress' },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("inferred: 'slice-design'");
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'docType',
+      value: 'slice-design',
+    });
+  });
+
+  it('no fixAction for missing docType when filename is not inferrable', () => {
+    const findings = validateFrontmatter('/project/readme.md', { status: 'in_progress' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].fixAction).toBeUndefined();
+  });
+});
+
+describe('validateFrontmatter — squadron machine-artifact docTypes (#73)', () => {
+  it('review-resolution missing dateCreated produces a finding', () => {
+    const findings = validateFrontmatter('/test.md', { docType: 'review-resolution' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'dateCreated'");
+  });
+
+  it('review-resolution with docType and dateCreated, no dateUpdated or status, validates clean', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'review-resolution',
+      dateCreated: '20260809',
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('gate-evidence missing dateCreated produces a finding', () => {
+    const findings = validateFrontmatter('/test.md', { docType: 'gate-evidence' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'dateCreated'");
+  });
+
+  it('gate-evidence with docType and dateCreated, no dateUpdated or status, validates clean', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'gate-evidence',
+      dateCreated: '20260809',
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('devlog missing dateCreated produces a finding', () => {
+    const findings = validateFrontmatter('/test.md', { docType: 'devlog' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'dateCreated'");
+  });
+
+  it('devlog with docType and dateCreated, no dateUpdated or status, validates clean', () => {
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'devlog',
+      dateCreated: '20260809',
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('a wrong docType literal is still caught by the value-constraint logic', () => {
+    // docType: devlog validated as-is — the literal itself doesn't match any
+    // *other* schema's required value, so this proves the values constraint
+    // on docType (not just presence) is enforced for these three schemas too.
+    const findings = validateFrontmatter('/test.md', {
+      docType: 'devlog',
+      dateCreated: '20260809',
+    });
+    expect(findings).toHaveLength(0);
+
+    const mismatched = validateFrontmatter('/test.md', {
+      docType: 'gate-evidence',
+      dateCreated: '20260809',
+    });
+    expect(mismatched).toHaveLength(0);
+
+    // An unregistered literal masquerading as one of the three schemas is
+    // simply a different (unknown) docType and passes through unvalidated —
+    // proving the docType `values` constraint, not just key lookup, is what
+    // ties a document to its schema.
+    const unknownDocType = validateFrontmatter('/test.md', {
+      docType: 'not-a-real-doctype',
+      dateCreated: '20260809',
+    });
+    expect(unknownDocType).toHaveLength(0);
+  });
+});
+
+describe('inferDocTypeFromPath', () => {
+  it.each([
+    ['140-arch.context-forge.md', 'architecture'],
+    ['160-slices.project-workflow.md', 'slice-plan'],
+    ['165-slice.test-feature.md', 'slice-design'],
+    ['165-tasks.test-feature.md', 'tasks'],
+    ['181-review.slice.foo.md', 'review'],
+    ['900-analysis.perf.md', 'analysis'],
+    ['001-concept.context-builder.md', 'concept'],
+  ])('%s → %s', (filename, expected) => {
+    expect(inferDocTypeFromPath(`/fake/${filename}`)).toBe(expected);
+  });
+
+  it('returns null for non-matching filenames', () => {
+    expect(inferDocTypeFromPath('/fake/readme.md')).toBeNull();
+    expect(inferDocTypeFromPath('/fake/guide.ai-project.process.md')).toBeNull();
+  });
+});
+
+describe('inferFieldsFromPath', () => {
+  it('infers docType and slice from slice-design filename', () => {
+    const fields = inferFieldsFromPath('/fake/100-slice.foundation.md');
+    expect(fields.docType).toBe('slice-design');
+    expect(fields.slice).toBe('foundation');
+  });
+
+  it('infers docType and slice from tasks filename', () => {
+    const fields = inferFieldsFromPath('/fake/165-tasks.test-feature.md');
+    expect(fields.docType).toBe('tasks');
+    expect(fields.slice).toBe('test-feature');
+  });
+
+  it('infers docType, archIndex, and component from architecture filename', () => {
+    const fields = inferFieldsFromPath('/fake/140-arch.context-forge-restructure.md');
+    expect(fields.docType).toBe('architecture');
+    expect(fields.archIndex).toBe('140');
+    expect(fields.component).toBe('context-forge-restructure');
+  });
+
+  it('does not infer slice for non-slice docTypes', () => {
+    const fields = inferFieldsFromPath('/fake/160-slices.project-workflow.md');
+    expect(fields.docType).toBe('slice-plan');
+    expect(fields.slice).toBeUndefined();
+  });
+
+  it('returns empty for non-matching filenames', () => {
+    expect(inferFieldsFromPath('/fake/readme.md')).toEqual({});
+  });
+});
+
+describe('validateFrontmatter — field inference', () => {
+  it('includes fixAction for missing slice on slice-design', () => {
+    const findings = validateFrontmatter(
+      '/project/user/slices/100-slice.foundation.md',
+      { docType: 'slice-design', project: 'test', status: 'complete', dateCreated: '20260101', dateUpdated: '20260301' },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'slice'");
+    expect(findings[0].description).toContain("inferred: 'foundation'");
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'slice',
+      value: 'foundation',
+    });
+  });
+
+  it('includes fixAction for missing archIndex on architecture', () => {
+    const findings = validateFrontmatter(
+      '/project/user/architecture/140-arch.context-forge.md',
+      { docType: 'architecture', project: 'test', status: 'complete', component: 'foo', dateCreated: '20260101', dateUpdated: '20260301' },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'archIndex'");
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'archIndex',
+      value: '140',
+    });
+  });
+
+  it('includes fixAction for missing component on architecture', () => {
+    const findings = validateFrontmatter(
+      '/project/user/architecture/140-arch.context-forge-restructure.md',
+      { docType: 'architecture', project: 'test', status: 'complete', archIndex: '140', dateCreated: '20260101', dateUpdated: '20260301' },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'component'");
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'component',
+      value: 'context-forge-restructure',
+    });
+  });
+
+  it('includes fixAction for missing project when projectName provided', () => {
+    const findings = validateFrontmatter(
+      '/project/user/slices/100-slice.foundation.md',
+      { docType: 'slice-design', slice: 'foundation', status: 'complete', dateCreated: '20260101', dateUpdated: '20260301' },
+      { projectName: 'context-forge' },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'project'");
+    expect(findings[0].description).toContain("inferred: 'context-forge'");
+    expect(findings[0].fixAction).toEqual({
+      type: 'update-frontmatter',
+      field: 'project',
+      value: 'context-forge',
+    });
+  });
+
+  it('no fixAction for missing project when projectName not provided', () => {
+    const findings = validateFrontmatter(
+      '/project/user/slices/100-slice.foundation.md',
+      { docType: 'slice-design', slice: 'foundation', status: 'complete', dateCreated: '20260101', dateUpdated: '20260301' },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'project'");
+    expect(findings[0].fixAction).toBeUndefined();
+  });
+});
+
+describe('validateFrontmatter — review field (#57, slice 911; renamed from codeReview, slice 914)', () => {
+  const baseSliceDesign = {
+    docType: 'slice-design',
+    slice: 'docs-only-example',
+    project: 'test',
+    status: 'complete',
+    dateCreated: '20260101',
+    dateUpdated: '20260301',
+  };
+
+  it('review absent produces no finding (default: reviews required)', () => {
+    const findings = validateFrontmatter('/test.md', baseSliceDesign);
+    expect(findings).toHaveLength(0);
+  });
+
+  it('review: none produces no finding', () => {
+    const findings = validateFrontmatter('/test.md', { ...baseSliceDesign, review: 'none' });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('an unrecognized review value produces an invalid-value finding', () => {
+    const findings = validateFrontmatter('/test.md', { ...baseSliceDesign, review: 'skip' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("'skip'");
+    expect(findings[0].description).toContain('review');
+    expect(findings[0].description).toContain('Invalid value');
+  });
+});
+
+describe('validateFrontmatter — architecture provenance field (slice 263 D7)', () => {
+  const baseArchitecture = {
+    docType: 'architecture',
+    project: 'test',
+    status: 'complete',
+    archIndex: '100',
+    component: 'existing-system',
+    dateCreated: '20261023',
+    dateUpdated: '20261023',
+  };
+
+  it('provenance: derived validates', () => {
+    expect(validateFrontmatter('/test.md', { ...baseArchitecture, provenance: 'derived' })).toHaveLength(0);
+  });
+
+  it('an unrecognized provenance value yields an invalid-value finding naming provenance', () => {
+    const findings = validateFrontmatter('/test.md', { ...baseArchitecture, provenance: 'guessed' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].rule).toBe('frontmatter-schema');
+    expect(findings[0].description).toContain('provenance');
+    expect(findings[0].description).toContain("'guessed'");
+  });
+
+  it('an architecture without provenance validates', () => {
+    expect(validateFrontmatter('/test.md', baseArchitecture)).toHaveLength(0);
+  });
+});

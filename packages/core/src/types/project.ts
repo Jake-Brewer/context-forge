@@ -25,6 +25,8 @@ export interface ProjectData {
   fileSpec?: string;
   /** Path to concept document (relative to project root) */
   fileConcept?: string;
+  /** Path to the codebase comprehension doc (relative to project root) */
+  fileComprehension?: string;
   customData?: {
     recentEvents?: string;
     additionalNotes?: string;
@@ -34,6 +36,12 @@ export interface ProjectData {
   worktrees?: WorktreeContext[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** ProjectData with optional metadata indicating which worktree overlay was applied. */
+export interface ResolvedProject extends ProjectData {
+  /** Present when a worktree overlay was applied. */
+  resolvedWorktree?: { id: string; name: string };
 }
 
 /**
@@ -76,6 +84,7 @@ export type UpdateProjectData = Partial<
     | 'fileSlicePlan'
     | 'fileSpec'
     | 'fileConcept'
+    | 'fileComprehension'
     | 'customData'
     | 'worktrees'
   >

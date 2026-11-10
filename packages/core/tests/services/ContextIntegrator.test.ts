@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ContextIntegrator } from '../../src/services/ContextIntegrator.js';
+import { ContextIntegrator, PermissivenessFragmentError } from '../../src/services/ContextIntegrator.js';
+import type { PermissivenessResolver } from '../../src/services/ContextIntegrator.js';
 import { ContextTemplateEngine } from '../../src/services/ContextTemplateEngine.js';
 import type { IPromptService, IStatementService } from '../../src/services/interfaces.js';
 import { createTestProjectData } from '../helpers/testData.js';
@@ -256,6 +257,106 @@ describe('ContextIntegrator', () => {
       await integrator.generateContextFromProject(project, 'wt_001');
       const contextData = generateSpy.mock.calls[0][0];
       expect(contextData.worktreeName).toBeUndefined();
+    });
+  });
+
+  describe('integration branch data flow (#70)', () => {
+    const worktrees = [
+      { id: 'wt_001', name: 'world-server', indexRange: [300, 499] as [number, number], worktreePath: '/tmp/test-wt' },
+    ];
+
+    async function generate(configured: string, worktreeId?: string) {
+      const engine = createMockEngine();
+      const generateSpy = vi.spyOn(engine, 'generateContext');
+      const resolver = vi.fn(async () => configured);
+      const integrator = new ContextIntegrator(engine, true, null, null, resolver);
+      const project = createTestProjectData({ projectPath: '/tmp/test', worktrees });
+      await integrator.generateContextFromProject(project, worktreeId);
+      return { contextData: generateSpy.mock.calls[0][0], resolver };
+    }
+
+    it('sets integrationBranch and targetBranch to the configured branch', async () => {
+      const { contextData } = await generate('dev/erik');
+      expect(contextData.integrationBranch).toBe('dev/erik');
+      expect(contextData.targetBranch).toBe('dev/erik');
+    });
+
+    it('resolves targetBranch to main when nothing is configured', async () => {
+      const { contextData } = await generate('');
+      expect(contextData.integrationBranch).toBe('');
+      expect(contextData.targetBranch).toBe('main');
+    });
+
+    it('reads the config from the project root without a worktree', async () => {
+      const { resolver } = await generate('', undefined);
+      expect(resolver).toHaveBeenCalledWith('/tmp/test');
+    });
+
+    it('reads the config from the worktree checkout when a worktree is selected', async () => {
+      const { resolver } = await generate('dev/erik', 'wt_001');
+      expect(resolver).toHaveBeenCalledWith('/tmp/test-wt');
+    });
+
+    it('leaves both fields undefined when no resolver is injected', async () => {
+      const engine = createMockEngine();
+      const generateSpy = vi.spyOn(engine, 'generateContext');
+      const integrator = new ContextIntegrator(engine, true);
+      await integrator.generateContextFromProject(createTestProjectData({ projectPath: '/tmp/test' }));
+      expect(generateSpy.mock.calls[0][0].targetBranch).toBeUndefined();
+      expect(generateSpy.mock.calls[0][0].integrationBranch).toBeUndefined();
+    });
+  });
+
+  describe('permissiveness fragment data flow (slice 246)', () => {
+    const worktrees = [
+      { id: 'wt_001', name: 'world-server', indexRange: [300, 499] as [number, number], worktreePath: '/tmp/test-wt' },
+    ];
+    const FRAGMENT = '### Permissiveness: sample\n\nSample body.';
+
+    function build(resolver: PermissivenessResolver | null) {
+      const engine = createMockEngine();
+      const generateSpy = vi.spyOn(engine, 'generateContext');
+      const integrator = new ContextIntegrator(engine, true, null, null, null, resolver);
+      const project = createTestProjectData({ projectPath: '/tmp/test', worktrees, instruction: 'Phase 4: Slice Design' });
+      return { integrator, project, generateSpy };
+    }
+
+    it('passes the project root and the instruction value; stores the result on permissivenessFragment', async () => {
+      const resolver = vi.fn(async () => FRAGMENT);
+      const { integrator, project, generateSpy } = build(resolver);
+      await integrator.generateContextFromProject(project);
+      expect(resolver).toHaveBeenCalledWith('/tmp/test', project.instruction);
+      expect(generateSpy.mock.calls[0][0].permissivenessFragment).toBe(FRAGMENT);
+    });
+
+    it('passes the worktree checkout path when a worktree is selected', async () => {
+      const resolver = vi.fn(async () => '');
+      const { integrator, project } = build(resolver);
+      await integrator.generateContextFromProject(project, 'wt_001');
+      expect(resolver).toHaveBeenCalledWith('/tmp/test-wt', project.instruction);
+    });
+
+    it('rejects when the resolver throws PermissivenessFragmentError (no silent fallback)', async () => {
+      const resolver = vi.fn(async () => {
+        throw new PermissivenessFragmentError('fragment missing');
+      });
+      const { integrator, project } = build(resolver);
+      await expect(integrator.generateContextFromProject(project)).rejects.toThrow('fragment missing');
+    });
+
+    it('keeps the error-stub behavior for any other resolver error', async () => {
+      const resolver = vi.fn(async () => {
+        throw new Error('unrelated failure');
+      });
+      const { integrator, project } = build(resolver);
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      await expect(integrator.generateContextFromProject(project)).resolves.toContain('Error generating context');
+    });
+
+    it('leaves the field undefined when no resolver is injected', async () => {
+      const { integrator, project, generateSpy } = build(null);
+      await integrator.generateContextFromProject(project);
+      expect(generateSpy.mock.calls[0][0].permissivenessFragment).toBeUndefined();
     });
   });
 

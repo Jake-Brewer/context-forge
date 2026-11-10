@@ -1,16 +1,15 @@
 # Context Forge
 
-Context Forge manages the full lifecycle of AI-assisted development projects — from concept through architecture, slice planning, task breakdown, implementation, and integration. It maintains traceable, hierarchical project state so that every AI session starts with full awareness of where things stand and what's next.
+<!-- Claude: please find code analysis details in user/analysis/940-analysis.initial-codebase.md -->
 
-Every slice has a design document. Every design has a task breakdown. Every task has completion state. Every session — whether it's you or an AI agent — picks up exactly where the last one left off, because the project state is real files with real structure, not a chat history that vanished.
+Context Forge massively speeds the development of large projects with AI agents while maintaining high quality.  
+
+It multiplies your cognitive abilities and doesn't try to replace them. Not another "Hey AI, build me an app" framework, and it may be overkill for building simple gadgets. Development is managed through a structured process, starting with broad initiatives and breaking functionality into vertical slices and individual tasks.  It maintains traceable, hierarchical project state so that every AI session starts with full awareness of where things stand and what's next.
+
+It's designed to be easy for AIs as well.  Every command can output structured JSON.  Easily readable by AI, and usable in pipelines.  The MCP server provides an agent_quickstart to simplify use by AIs.
+
 
 ## What It Looks Like
-
-### Visualizer
-![Context Visualizer](assets/context-visualizer.png)
-
-Visualizer is available separately at:  
-https://github.com/ecorkran/context-visualizer
 
 ### CLI
 Everything is discoverable under the `cf` command.  Start with `cf --help`.  Easily manage multiple projects.  cf knows which one based on your current directory.  `cf init` to start a new one.  Ideally it will feel similar to git.
@@ -22,25 +21,56 @@ Obtain brief status with `cf status`, detailed with `cf project get`. Use the MC
 
 Your AI assistant sees this too — through MCP tools, through slash commands, through the CLI. It knows the project structure, the methodology phase, the active slice, and (*very* soon) exactly which task to work on next. No "let me catch you up." No re-reading CLAUDE.md. No guessing.
 
+### Visualizer
+![Context Visualizer](assets/context-visualizer.png)
+
+Context Forge builds big projects fast.  Visualizer is a separate tool to help humans maintain an overview.  Available at:  
+https://github.com/ecorkran/context-visualizer
+
+
 ## Get Started
 
+Most people should install [Squadron](https://github.com/ecorkran/squadron) and let it
+set up Context Forge for them. Squadron drives multi-agent pipelines through `cf`, so it
+installs and configures both. If you only want the methodology and context engine, the
+standalone path below is fully supported.
+
+### Recommended: install via Squadron
+
 ```bash
-# 1. Install globally
-npm install -g @context-forge/mcp @context-forge/cli
+uv tool install squadron-ai     # or: pipx install squadron-ai
+sq setup                        # installs cf, /sq:* and /cf:* commands, checks providers
+```
+
+`sq setup` is interactive and idempotent, so it is safe to re-run. Then, inside each
+project you want to work on:
+
+```bash
+cf init                         # creates the project, installs guides, configures your IDE
+```
+
+### Context Forge on its own
+
+```bash
+# 1. Install globally (one package gets you everything)
+npm install -g @context-forge/context-forge
 
 # 2. Add the MCP server (strongly recommended)
 claude mcp add --transport stdio context-forge -- npx @context-forge/mcp
+# Codex CLI instead? Add to ~/.codex/config.toml — see the MCP config details below.
 
 # 3. Set up your project — pick one:
 cf init                   # CLI: creates project, installs guides, configures IDE, installs slash commands
+cf init --ide copilot     # Same, but configured for VS Code Copilot instead of Claude Code
+cf init --ide codex       # Same, but configured for OpenAI Codex (also: cursor, agents, openai)
 # — or —
-/cf:onboard               # Slash command: AI-guided setup — walks you through everything conversationally
+/cf:onboard               # Slash command: AI-guided setup — registers the project, then hands off to `cf build`
 ```
 
-That's it. `cf status` works. Your AI assistant can call Context Forge tools. `/cf:build` assembles context. `/cf:onboard` can take a new user from zero to their first concept discussion.
+That's it. `cf status` works. Your AI assistant can call Context Forge tools. `/cf:build` assembles context. `/cf:onboard` sets up the project, then runs `cf build` and follows the prompt it returns. It needs ai-project-guide v0.22.11 or newer; on an older install `cf build` warns and `cf guides update` fixes it.
 
 <details>
-<summary>MCP server JSON config (for Cursor, Perplexity, Windsurf, etc.)</summary>
+<summary>MCP server config (Cursor, Windsurf, OpenAI Codex, etc.)</summary>
 
 ```json
 {
@@ -52,6 +82,14 @@ That's it. `cf status` works. Your AI assistant can call Context Forge tools. `/
 }
 ```
 
+For OpenAI Codex CLI, add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.context-forge]
+command = "npx"
+args = ["@context-forge/mcp"]
+```
+
 </details>
 
 <details>
@@ -60,18 +98,44 @@ That's it. `cf status` works. Your AI assistant can call Context Forge tools. `/
 ```bash
 cf guides install          # Install methodology guides into your project
 cf setup-ide claude        # Install Claude rules and create CLAUDE.md
-cf install-commands        # Install Claude Code slash commands
+cf setup-ide copilot       # Install rules/skills for VS Code Copilot
+cf setup-ide cursor        # Install scoped rules for Cursor, always-on rules in AGENTS.md
+cf setup-ide codex         # Write AGENTS.md + skills for OpenAI Codex (aliases: openai, agents)
+cf setup-ide claude --dry-run  # Preview what setup-ide would add/change/remove; writes nothing
+cf setup-ide claude --write-lint  # Also write missing lint configs (eslint.config.mjs, ruff.toml, ...)
+cf install-commands              # Install /cf:* slash commands for Claude Code (machine-level)
+cf install-commands --ide codex  # Install $cf-* agent skills for Codex (machine-level)
+cf install-commands --local      # Project-local install (either target)
 ```
+
+Each target writes a different file layout:
+
+```
+cf setup-ide claude              # CLAUDE.md, .claude/{rules,agents,skills}/
+cf setup-ide copilot             # AGENTS.md, .github/copilot-instructions.md,
+                                  # .github/instructions/, .agents/skills/<name>/SKILL.md
+cf setup-ide cursor              # AGENTS.md (always-on), .cursor/rules/*.mdc (scoped)
+cf setup-ide codex|openai|agents # AGENTS.md, .agents/skills/<name>/SKILL.md
+```
+
+A guide rule can be limited to some agents with `agents: [claude]` in its frontmatter. Without the key, the rule goes everywhere. The audiences name output files, not targets:
+
+- `claude`: the CLAUDE.md block and `.claude/rules/`
+- `agents`: the AGENTS.md block and its scoped-rule index
+- `copilot`: the copilot-instructions.md block and `.github/instructions/`
+- `cursor`: `.cursor/rules/`
+
+A skipped scoped rule prints `⊘ Skipped <file> (agents: …)`, and a file an earlier run wrote for it is removed. An unknown value is ignored with a warning. Cursor reads its always-on rules from AGENTS.md, so an always-on rule meant for Cursor must list `agents`.
 
 </details>
 
-Requirements: Node.js 18+.
+Requirements: Node.js 20.18+.
 
 ## How It Works
+Context Forge is built around a structured development methodology called [ai-project-guide](https://github.com/ecorkran/ai-project-guide). 
 
-Context Forge is built around a structured development methodology called [ai-project-guide](https://github.com/ecorkran/ai-project-guide). Projects progress through phases:
-
-**Concept → Architecture → Slice Planning → Slice Design → Task Breakdown → Implementation → Integration**
+Projects progress through phases:
+**Concept → Initiative Plan → Architecture → Slice Planning → Slice Design → Task Breakdown → Implementation → Integration**
 
 Each phase produces documents. Documents reference each other. Slices decompose into tasks. Tasks track completion. The whole thing is a hierarchy you can navigate, introspect, and hand off between humans and agents without losing state.
 
@@ -85,9 +149,221 @@ It manages multiple projects simultaneously. Each one has its own slice plan, it
 
 For larger projects with parallel initiatives — running architecture and a feature slice at the same time, for example — worktrees let you run multiple AI sessions in separate git worktrees, each with its own phase/slice/task context, without conflicts.
 
-## Access Points
+### Choosing a guide install strategy
 
-Context Forge is available through four interfaces — use whichever fits your workflow:
+`cf guides install` and `cf init` accept `--strategy` to control how the guide
+lands in your project. The guide itself is identical either way; the strategies
+differ in how it is tracked.
+
+| Strategy | Trade-off |
+| --- | --- |
+| `tarball` (default) | plain files with no git wiring, simplest for teams |
+| `submodule` | version-pinned and updatable, but teammates must run git submodule update |
+| `clone` | a full working copy you can commit to, larger checkout |
+
+**Why tarball is the default.** The guide lands as plain files in your repo — the
+archive's own git files (`.gitmodules`, `.gitignore`) are dropped at extract
+time — so once one person runs the install, everyone else gets the guide from
+your repo like any other file. Nobody has to think about submodule checkout, CI
+needs no `submodules: true`, and there is no second repository nested inside
+yours. The install is committed for you (`docs: install ai-project-guide
+<version>`), touching only the guide directory and never pushing; if the project
+is not a git repository, or gitignores the guide, the commit is skipped and the
+output says so. `cf guides update` replaces the directory and commits the same
+way, so a guide bump shows up as an ordinary reviewable diff.
+
+The person running the install needs to reach github.com (to resolve the latest
+tag) and api.github.com (to download the archive); the standard `HTTPS_PROXY` /
+`NO_PROXY` variables are honored for both. The source must be a github.com
+repository, and a `guide.source` config value is honored on both install and
+update.
+
+Pick `submodule` with `--strategy submodule` when you want the exact guide commit
+pinned and reviewable in a diff, updates that go through git rather than the
+GitHub API, or a working path for contributing improvements back upstream. A
+teammate who clones without `--recurse-submodules` is covered: Context Forge
+initializes the checkout automatically the first time a command reads guide
+content, reporting what it did on stderr. `cf guides info` shows the checkout
+state and never modifies it. A checkout sitting at a commit other than the one
+your project pins is reported and left alone, since that is usually deliberate.
+
+**The strategy you pass is remembered.** When `--strategy` names something other
+than what the project's config already resolves to, it is written to
+`guide.git_strategy` in the shared project config (`.context-forge.toml`), so a
+later bare `cf guides install`, or a teammate's, uses the same strategy. Commit
+that file.
+
+**Switching an existing submodule install to tarball:**
+
+```bash
+cf guides uninstall                     # removes the submodule, its .git/modules data, and commits
+cf guides install --strategy tarball    # installs as plain files and commits
+git add .context-forge.toml && git commit -m "chore: set guide strategy to tarball"
+```
+
+Pick `clone` when you intend to edit the guide in place. The strategy name
+`manual` is a deprecated alias for `tarball`; it still works and prints a
+deprecation notice.
+
+> This directory is managed by cf and overwritten on `cf guides update`. Put
+> project-specific customizations under `project-documents/user/`.
+
+#### Previewing, pinning and local archives (tarball installs)
+
+`cf guides update` downloads the new guide into a staging directory and shows
+what would change before it touches anything:
+
+```
+Guide update: v0.20.2 → v0.21.0
+  12 added, 3 removed, 41 changed
+Continue? (y/N)
+```
+
+Answering anything but `y` leaves the guide and git untouched. `--yes` skips the
+question (and the branch-guard question too). With no terminal to ask on, such as
+a closed stdin, the answer is no, so unattended runs need `--yes`. When nothing
+differs, it prints `Guide is already up to date` and changes nothing. The
+`guide_update` MCP tool has no prompt: it applies the update and returns the same
+counts as `preview` (`unchanged: true` when nothing differed); the swap is one
+commit you can revert.
+
+Two flags work on both `cf guides install` and `cf guides update`:
+
+- `--version <tag>` installs that release instead of the newest. It applies to
+  that call only and is not remembered; a tag the remote does not have fails and
+  names the newest one.
+- `--source <url|path.tgz>` takes a GitHub URL or a local `.tgz`/`.tar.gz`
+  archive (relative paths resolve against the directory you run `cf` in; the
+  MCP tools resolve against the project root). The archive needs a single
+  top-level directory, like a GitHub tarball. A local install is recorded as
+  version `local`, so `cf guides info` shows `local` and reports an update as
+  available; a later plain `cf guides update` moves to the newest release.
+  `--version` cannot be combined with a local archive.
+
+Both are tarball-only: on a submodule or clone install they fail with an error
+instead of being ignored.
+
+#### Leaving guide content out (`guide.exclude`)
+
+Most projects use only a few of the guide's `tool-guides/` and
+`framework-guides/`. A tarball install can skip the rest:
+
+```bash
+cf config set guide.exclude "tool-guides/**,framework-guides"
+cf guides update        # re-extracts at the same version without the excluded paths
+```
+
+- Each entry is a path relative to the guide root, matched as that file or
+  directory and everything under it. A trailing `/` or `/**` means the same as
+  the bare path; no other wildcards are supported.
+- `project-guides` and `scripts` are protected: cf needs them, so an entry that
+  equals, contains, or sits inside either one is refused. The one exception is a
+  single language's lint config, `project-guides/lint/<language>` (for example
+  `project-guides/lint/csharp`); `project-guides/lint` itself is refused.
+- Tarball installs only. Submodule and clone installs ignore the key and say so.
+- A change applies on the next `cf guides update` (or a fresh install); `cf guides
+  info` shows the applied list and flags a pending change. The key lives in the
+  shared `.context-forge.toml`; the update commit includes that file when
+  `guide.exclude` is its only uncommitted change. If you have other edits in it,
+  the file is left out of the commit and cf says so.
+- Links from the remaining guide content into an excluded path will break.
+
+## Adopting an Existing Codebase
+
+Adoption of an existing codebase is run by squadron's `sq onboard`, which calls Context Forge. Context Forge doesn't start or run an adoption on its own. It does notice an existing codebase: `cf init`, `/cf:onboard` and `cf next` print one line naming `sq onboard` and the opt-out, and onboarding stops before the concept conversation. `cf build` is unchanged by the codebase. To treat a project with existing code as new, run `cf config set adoption.state declined`. An adoption writes a concept, which squadron drafts and you confirm, then a derived architecture and an existing-state slice plan. Your assistant writes those from Context Forge's adoption prompt, recording the built work as completed history followed by your new work. An adopted project is then navigated like any other, so `cf next` points at the first new slice. The primitives squadron uses are described in [Adoption Primitives](docs/ADOPTION-PRIMITIVES.md).
+
+When the project already has rule files (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, ...), `cf setup-ide` keeps your text and appends the guide's rules below it. To settle any contradictions between the two, fetch the reconciliation prompt with `cf prompt get conventions-reconciliation` and give it to your assistant. It lists the conflicts, asks you to decide each one, and records the decisions with `cf rules resolve`. Run `cf setup-ide <target>` again to apply them. The prompt ships in ai-project-guide v0.22.6; on an older guide, the command fails with "No prompt found" and you record decisions by hand with `cf rules resolve <guideRule> <projectSource> --statement "<text>"` (see `cf rules inventory --json` for the valid names).
+
+An adopted project's existing README, `docs/` and ADRs stay where they are. `cf docs map` writes `project-documents/user/architecture/050-docs-map.{project}.md`, an index that links each of them in place, so the derived architecture and later designs can point at them. Re-run it to refresh the list; entries you add by hand outside the managed block are kept.
+
+If detection gets it wrong, the opt-out is `cf config set adoption.state declined`; `cf config get adoption.state` describes the values. Commands are in the [CLI reference](packages/cli/README.md), and [Review Gating](docs/REVIEW-GATING.md) explains how the review gate treats the recorded history.
+
+## Consistency Checks and `--fix`
+
+`cf check` finds mismatches between related documents: a slice whose tasks are
+all done but whose plan entry is unchecked, a design whose status disagrees with
+its tasks, and so on. `cf check --fix` applies the safe corrections (checkboxes
+and frontmatter status fields). Without `--slice` it shows what it found and
+asks before writing; `--yes` skips the question.
+
+**With worktrees**, each fix is written only in the checkout that owns its
+subject, decided by the worktrees' index ranges. Documents no range claims
+belong to the main project checkout.
+
+- Fixes in the checkout you run from stay uncommitted, as before.
+- Fixes in another registered checkout are committed there, one commit per
+  checkout, containing only the fixed files:
+  `docs: update project documents in response to cf check --fix`. Nothing is pushed.
+- Some fixes are left alone and listed with a reason:
+  - another checkout's stale copy of a document
+  - a checkout that is missing, on a detached HEAD, or mid-merge/rebase
+  - a file with uncommitted edits
+  - a commit rejected by that checkout's hooks (the written files are restored)
+- Running `--fix` from a checkout that isn't a registered worktree is an error.
+  Run `cf worktree init` there, or run from a registered checkout.
+
+**`--no-commit`** (MCP `workflow_check`: `noCommit: true`) writes the fixes in
+every checkout and commits nothing, so you can fold them into your own commit.
+The files written are listed per checkout (`fixLog` in `--json` output; with
+worktrees each entry names its worktree). Fixes that would overwrite a file with
+uncommitted edits are still left alone. Run the commit yourself in each
+checkout listed.
+
+`cf config set workflow.auto_fix true` makes every `cf check` a fixing run, with
+no confirmation. With worktrees, that means a plain `cf check` can commit into
+other checkouts. That includes the DEVLOG archiving below: with `workflow.auto_fix`
+on, a plain `cf check` can archive and commit `DEVLOG.md` without a prompt.
+
+### Keeping `DEVLOG.md` small
+
+`DEVLOG.md` grows without bound, and a very large one can overflow an agent's
+tool-result buffer. When it passes `devlog.max_bytes`, `cf check` warns
+(`devlog-size`), and `cf devlog archive [--dry-run]` or `cf check --fix` moves the
+older day sections, cut from the bottom, into quarterly archives at
+`project-documents/user/archive/devlog/DEVLOG-YYYY-Qn.md`. The newest sections
+stay, up to `devlog.target_bytes`; a day section is never split. `--dry-run`
+prints the plan and writes nothing, and `cf devlog archive` never commits. With
+several checkouts, `--fix` archives only in the main checkout.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `devlog.max_bytes` | `200000` | Size above which `cf check` warns and archiving runs |
+| `devlog.target_bytes` | `100000` | Size archiving keeps `DEVLOG.md` at or under; must be below `devlog.max_bytes` |
+
+## Review Gating
+
+Optionally require a review artifact (with a clearing verdict) before Context Forge recommends advancing past a lifecycle boundary — deterministic, AI-free routing with **zero behavior change unless you turn it on**:
+
+```bash
+cf config set workflow.review_enabled true
+```
+
+Off by default. To exempt a single slice from its review requirement:
+
+```bash
+cf check --set-review-none <index>    # writes review: none to that slice's design doc
+```
+
+See the [Review Gating reference](docs/REVIEW-GATING.md) for the full config-key surface, decision matrix, and other escape hatches (grandfathering old work, exempting docs-only slices).
+
+## Design Philosophy
+ 
+Context Forge resists the urge to be clever on your behalf.
+ 
+We added compound commands — `cf implement` instead of `cf set phase 6 && cf build`. Then we cut them all. They bloated the command surface, cluttered the slash commands, and obscured what was actually happening. The low-level commands were better. They composed. They were transparent. So we went back.
+ 
+This is a pattern, not an accident. The tool stays close to the metal:
+ 
+- **No magic.** You can do everything through MCP if you want, but `cf set phase 6` is a hundred times faster and you should just type it. The MCP tools exist so agents can operate autonomously, not so humans can burn tokens setting a property.
+- **No opinions about your stack.** Context Forge doesn't care if you're writing Python, TypeScript, C++, or all three. It manages project state and generates context. Your agents do the rest.
+- **No hand-holding.** There's an onboarding flow if you want it (`/cf:onboard`). There's `cf next` if you want guidance. But the tool doesn't gate your progress or force you through ceremonies. You're the architect. Act like it.
+
+### Naming Things
+Started as a simple Electron utility called Context Builder, and long since outgrew both the name and the Electron app. It stays Context Forge because the npm org carries four packages and seventy-odd releases, and renaming that costs every existing user more than a better name is worth. Naming things is hard. One of the only two hard things, together with cache invalidation and off-by-one errors.
+
+
+## Access Points
+Three interfaces — use whichever fits your workflow:
 
 ### MCP Server (`@context-forge/mcp`)
 
@@ -103,49 +379,79 @@ Context Forge is available through four interfaces — use whichever fits your w
 | Configuration | `config_get`, `config_set` |
 | Guides | `guide_install`, `guide_status`, `guide_update` |
 | Storage | `storage_backup` |
-| Meta | `agent_guide`, `agent_onboard`, `server_version` |
+| Meta | `agent_onboard`, `agent_quickstart`, `server_version` |
 
 ### CLI (`@context-forge/cli`)
 
-`cf` works like `git` — install it globally and it detects your project from the current directory. Compound commands like `cf slice 208` replace the old `cf set slice 208 && cf set phase 4 && cf build` ceremony — one command per phase transition. Pipeable output: `cf slice 208 | pbcopy` gives you a ready-to-paste context prompt. `--json` on every read command for scripting.
+`cf` works like `git` — install it globally and it detects your project from the current directory. `--json` on every read command for scripting.
 
 | Command | Description |
 |---------|-------------|
 | `cf init` | Initialize project: git, guides, IDE config, slash commands |
 | `cf status` | Workflow status (phase, slice, task progress) |
 | `cf next` | Recommended next action with rationale |
-| `cf build` | Assemble context prompt for AI session |
+| `cf build` | Assemble context prompt for AI session (`--embed` inlines artifact files for non-SDK models) |
 | `cf set <field> <value>` | Set a project field |
+| `cf unset <field>` | Clear an optional project field (distinct from setting it empty) |
 | `cf get` | Show all project fields |
-| `cf check` | Run consistency checks (`--fix`, `--slice`) |
-| **Compound commands** | **Set phase + artifact + build in one step** |
-| `cf concept` | Set Phase 0 and build concept prompt |
-| `cf initiatives` | Set Phase 1 and build initiative plan prompt |
-| `cf arch <index>` | Set architecture initiative, Phase 2, and build |
-| `cf plan <index>` | Set slice plan, Phase 3, and build |
-| `cf slice <index>` | Set active slice, Phase 4, and build |
-| `cf tasks <index>` | Set task file, Phase 5, and build |
-| `cf implement <index>` | Set active slice, Phase 6, and build |
+| `cf check` | Run consistency checks (`--fix`, `--no-commit`, `--slice`, `--set-review-none <index>` to exempt a slice from review) |
+| `cf validate` | Validate project artifacts against their machine-readable schemas |
 | **Listing** | **Browse project artifacts** |
 | `cf list projects` | All registered projects |
-| `cf list initiatives` | Architecture initiatives with slice counts |
+| `cf list initiatives` | Architecture initiatives with slice counts (alias: `cf list arch`) |
 | `cf list plans` | Slice plan files with progress |
 | `cf list slices` | Slices from the active plan with status |
 | `cf list tasks` | Task files with completion counts |
 | `cf list items` | Individual tasks from the active task file |
 | **Management** | |
-| `cf project list\|get\|set\|rm` | Manage projects |
+| `cf project list\|get\|set\|unset\|rm` | Manage projects |
 | `cf worktree init\|list\|get\|update\|rm` | Manage git worktree contexts |
-| `cf config get\|set` | Two-tier configuration |
+| `cf config get\|set\|unset` | Two-tier configuration (`migrate-personal` moves personal keys out of the shared file) |
 | `cf future` | Consolidated future work across all plans |
 | `cf prompt list\|get <phase>` | Prompt templates with variable substitution |
-| `cf guides install\|status\|update\|uninstall` | ai-project-guide template management |
+| `cf guides install\|info\|update\|uninstall` | ai-project-guide template management |
 | `cf setup-ide claude` | Configure Claude Code integration |
+| `cf setup-ide copilot` | Configure VS Code Copilot integration |
+| `cf setup-ide cursor` | Configure Cursor integration (scoped rules + AGENTS.md) |
+| `cf setup-ide codex` | Configure OpenAI Codex integration (aliases: `openai`, `agents`) |
+| `cf install-commands` / `cf uninstall-commands` | Install or remove `/cf:*` commands (Claude Code) or `$cf-*` skills (`--ide codex`); machine-level by default, `--local` for project-local |
 | `cf backup` | Versioned project data backup (keeps last 10) |
+| `cf update` | Update the CLI to the latest published version |
 
-### Claude Code Slash Commands
+#### Key configuration
 
-Installed via `cf install-commands`. Available directly in Claude Code sessions:
+`cf config` reads and writes two scopes — **shared** keys (safe to commit; team-wide policy) and **personal** keys (per-developer, git-ignored). Run `cf config get` with no key to list everything. The keys you're most likely to set:
+
+| Key | Scope | Purpose |
+|-----|-------|---------|
+| `git.integration_branch` | personal | Long-lived branch that work branches fork from and merge into instead of `main` (e.g. `dev/erik`). Changes git topology, not just names. |
+| `workflow.review_enabled` | shared | Turn on review gating (off by default). |
+| `workflow.decision_gate_enabled` | shared | Block design validation and `cf next` on pending PM decisions (on by default). |
+| `workflow.setup_ci_offer` | shared | `cf next` offers the setup-ci skill when a project has a build manifest but no CI or release skill (on by default). Set to `false` to stop the offer. |
+| `workflow.permissiveness` | shared | How readily AI work waits on the PM: `cautious`, `standard` (default) or `autonomous`. Applied by `cf build` in Phases 4–6. |
+| `adoption.state` | shared | Set to `declined` to treat this project as new even when it holds existing code. Empty (default): cf decides from the project's files. The old values `in_progress` and `complete` are ignored. |
+| `workflow.review_threshold` | shared | Verdict floor that clears a gate (`pass` \| `concerns`). |
+| `workflow.review_gate_effective_date` | shared | Grandfather work designed before `YYYYMMDD` past the gate. |
+| `workflow.auto_advance` | shared | Auto-advance to the next slice when the current one completes. |
+| `guide.auto_update` | shared | Auto-update the AI project guide. |
+
+Full key reference and precedence rules: [Review Gating](docs/REVIEW-GATING.md) and `cf config --help`.
+
+##### Permissiveness
+
+`workflow.permissiveness` sets how readily AI work waits on the Project Manager:
+
+- `cautious` — wait readily, including at phase boundaries.
+- `standard` (default) — the guide's baseline behavior. Adds nothing.
+- `autonomous` — don't wait; LLM spend, pipeline runs and live tests are pre-authorized. Real stops use a `BLOCKED:` line.
+
+`cf build` and the MCP `context_build` tool add the level's wording right after the instruction prompt, in Phases 4, 5 and 6 only. A change applies at the next build; there is nothing to reinstall and no `cf setup-ide` step. Sessions that don't go through `cf build` (or `/cf:build`) don't get the setting.
+
+The wording comes from the installed AI project guide, one file per level at `project-guides/rules/permissiveness/<level>.md` (guide v0.21.9 or later). If the file for the configured level is missing or empty, the build fails and names the path; `cf guides update` fixes it. cf does not read or enforce `BLOCKED:` lines; they are a convention for the AI and the PM.
+
+### Slash Commands & Agent Skills
+
+Installed via `cf install-commands` (Claude Code, as `/cf:*` slash commands) or `cf install-commands --ide codex` (OpenAI Codex, as `$cf-*` agent skills — e.g. `$cf-build`, `$cf-status`). Same nine entry points either way:
 
 | Command | Description |
 |---------|-------------|
@@ -155,12 +461,9 @@ Installed via `cf install-commands`. Available directly in Claude Code sessions:
 | `/cf:get` | Show all project fields |
 | `/cf:set` | Set a project field |
 | `/cf:next` | Recommended next action |
+| `/cf:check` | Run consistency checks on project artifacts |
 | `/cf:prompt` | Get or list prompt templates |
 | `/cf:project` | Manage projects |
-
-### Electron Desktop App
-
-Visual interface for project management, template editing, and context preview. Multi-project support, split-pane editor, light/dark themes.
 
 ## Architecture
 
@@ -168,24 +471,31 @@ pnpm monorepo, four packages:
 
 ```
 packages/
-  core/       @context-forge/core    — context engine, project state, introspection, workflow
-  mcp-server/ @context-forge/mcp     — MCP protocol server ([nn] tools)
-  cli/        @context-forge/cli     — terminal interface (cf command)
-  electron/   @context-forge/electron — desktop app
+  context-forge/ @context-forge/context-forge — meta-package (installs cli + mcp)
+  core/          @context-forge/core          — context engine, project state, introspection, workflow
+  mcp-server/    @context-forge/mcp           — MCP protocol server (34 tools)
+  cli/           @context-forge/cli           — terminal interface (cf command)
 ```
 
 All interfaces consume `@context-forge/core` directly. The MCP server and CLI produce identical results for the same operations — they're different access patterns to the same engine.
 
-1345 tests across all packages. TypeScript, strict mode, no `any`.
+Comprehensive test coverage across all packages. TypeScript, strict mode, no `any`.
 
-## Also
+## Related
+
+**[Squadron](https://github.com/ecorkran/squadron)** — Multi-agent pipeline orchestration built on Context Forge. Runs reviews, analyses, and multi-step work across providers, driving `cf` for project state and context. `sq setup` installs both, which is the recommended way in.
 
 **[context-visualizer](https://github.com/ecorkran/context-visualizer)** — React app that visualizes project structure through the MCP server. See your slice plans, task completion, and project hierarchy rendered visually.
 
 **[ai-project-guide](https://github.com/ecorkran/ai-project-guide)** — The methodology framework. Phases, guides, prompt templates, review rules, IDE configuration. This is what Context Forge's structure is built on. Install it with `cf guides install`.
 
+**[Agent Integration Guide](docs/AGENT-INTEGRATION.md)** — How to integrate with Context Forge from an AI agent, orchestrator, or CI pipeline. Covers MCP tools, CLI `--json` mode, structured errors, and command discovery.
+
+**[Review Gating](docs/REVIEW-GATING.md)** — Config-key reference, decision matrix, workflow states, and escape hatches for the optional review-gate feature.
+
 ## Published Packages
 
+- [`@context-forge/context-forge`](https://www.npmjs.com/package/@context-forge/context-forge) — meta-package (installs cli + mcp)
 - [`@context-forge/mcp`](https://www.npmjs.com/package/@context-forge/mcp)
 - [`@context-forge/cli`](https://www.npmjs.com/package/@context-forge/cli)
 - [`@context-forge/core`](https://www.npmjs.com/package/@context-forge/core)

@@ -1,9 +1,46 @@
+import { EXCLUDABLE_GUIDE_SUBTREES, GuideExcludeError, parseGuideExclude } from './guideExclude.js';
+
+export const ConfigScope = {
+  Shared: 'shared',
+  Personal: 'personal',
+} as const;
+
+export type ConfigScope = (typeof ConfigScope)[keyof typeof ConfigScope];
+
 export interface ConfigKeyDefinition {
   type: 'string' | 'boolean' | 'number';
   default: string | boolean | number;
   description: string;
+  scope: ConfigScope;
   enum?: string[];
   validate?: (value: string | boolean | number) => string | null;
+}
+
+export const PERMISSIVENESS_LEVELS = ['cautious', 'standard', 'autonomous'] as const;
+
+export type PermissivenessLevel = (typeof PERMISSIVENESS_LEVELS)[number];
+
+// The default level, and the one level with no guide fragment (adds nothing to the build).
+export const STANDARD_PERMISSIVENESS: PermissivenessLevel = PERMISSIVENESS_LEVELS[1];
+
+// The adoption values are defined here, not in adoption/, because adoption/adoptionState.ts
+// imports ConfigManager, which imports this file.
+
+/** The one stored adoption value: the user's opt-out from adoption detection (slice 269 D1). */
+export const ADOPTION_OPT_OUT = 'declined';
+
+export const ADOPTION_STATES = ['', ADOPTION_OPT_OUT] as const;
+
+/** Values cf wrote before slice 269. Read and ignored with a notice, never an error (D2). */
+export const LEGACY_ADOPTION_STATES = ['in_progress', 'complete'] as const;
+
+export type LegacyAdoptionState = (typeof LEGACY_ADOPTION_STATES)[number];
+
+function validatePositiveInteger(value: string | boolean | number): string | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    return 'must be a positive integer';
+  }
+  return null;
 }
 
 export const CONFIG_KEYS: Record<string, ConfigKeyDefinition> = {
@@ -11,26 +48,236 @@ export const CONFIG_KEYS: Record<string, ConfigKeyDefinition> = {
     type: 'boolean',
     default: false,
     description: 'Whether to automatically update the AI project guide',
+    scope: ConfigScope.Shared,
   },
   'guide.source': {
     type: 'string',
     default: '',
     description: 'URL or path to the AI project guide source',
+    scope: ConfigScope.Shared,
   },
   'guide.git_strategy': {
     type: 'string',
-    default: 'submodule',
+    default: 'tarball',
     description: 'Strategy for managing the AI project guide via git',
-    enum: ['submodule', 'clone', 'manual'],
+    // 'manual' is a deprecated alias for 'tarball'. It stays in the enum so
+    // existing shared config files keep validating; normalizeGuideMethod()
+    // maps it to 'tarball' when the value is read.
+    enum: ['submodule', 'clone', 'tarball', 'manual'],
+    scope: ConfigScope.Shared,
+  },
+  'guide.exclude': {
+    type: 'string',
+    default: '',
+    description:
+      'Comma-separated guide-relative paths that tarball installs skip (e.g. "tool-guides/**,framework-guides"). A trailing "/" or "/**" means the same as the bare path; no other wildcards are supported. project-guides is protected and cannot be excluded, except subpaths of ' + EXCLUDABLE_GUIDE_SUBTREES.join(', ') + ' (e.g. a single language: ' + EXCLUDABLE_GUIDE_SUBTREES[0] + '/csharp). Applies to tarball installs only (submodule and clone ignore it). A change takes effect on the next `cf guides update`. Empty means install everything.',
+    scope: ConfigScope.Shared,
+    validate: (value) => {
+      if (typeof value !== 'string') return 'must be a string';
+      try {
+        parseGuideExclude(value);
+        return null;
+      } catch (err) {
+        if (err instanceof GuideExcludeError) return err.message;
+        throw err;
+      }
+    },
   },
   'workflow.auto_advance': {
     type: 'boolean',
     default: false,
     description: 'Auto-advance to next slice when current is complete',
+    scope: ConfigScope.Shared,
   },
   'workflow.auto_fix': {
     type: 'boolean',
     default: false,
     description: 'Automatically apply non-destructive corrections when running consistency checks',
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_enabled': {
+    type: 'boolean',
+    default: false,
+    description: 'Enable review gating in the workflow navigator (off by default; no behavior change when false)',
+    scope: ConfigScope.Shared,
+  },
+  'workflow.decision_gate_enabled': {
+    type: 'boolean',
+    default: true,
+    description:
+      'When true, a pending PM decision in a slice design fails `cf validate design` and blocks `cf next` from Phase 5 and 6. When false, the parser never runs.',
+    scope: ConfigScope.Shared,
+  },
+  'workflow.setup_ci_offer': {
+    type: 'boolean',
+    default: true,
+    description:
+      'When true, `cf next` offers the setup-ci skill for a project with a build manifest and no recognized CI or release skill. Set to false to stop the offer.',
+    scope: ConfigScope.Shared,
+  },
+  'workflow.permissiveness': {
+    type: 'string',
+    default: STANDARD_PERMISSIVENESS,
+    description:
+      'How readily AI work waits on the Project Manager. `cf build` adds the guide\'s rules/permissiveness/<level>.md after the instruction prompt in Phases 4-6; "standard" adds nothing.',
+    enum: [...PERMISSIVENESS_LEVELS],
+    scope: ConfigScope.Shared,
+  },
+  'adoption.state': {
+    type: 'string',
+    default: '',
+    enum: [...ADOPTION_STATES],
+    scope: ConfigScope.Shared,
+    description:
+      'Set to "declined" to treat this project as new even when it holds existing code. ' +
+      "Empty (default): cf decides from the project's files. The old values in_progress and complete are ignored.",
+  },
+  'workflow.review_threshold': {
+    type: 'string',
+    default: 'concerns',
+    description:
+      'Verdict floor that clears a review gate: "pass" requires PASS; "concerns" clears on PASS or CONCERNS',
+    enum: ['pass', 'concerns'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_unknown_as': {
+    type: 'string',
+    default: 'fail',
+    description:
+      'How to treat an UNKNOWN/absent/unparseable verdict: "fail" blocks, "concerns" treats as CONCERNS, "pass" clears',
+    enum: ['fail', 'concerns', 'pass'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_weak_pass_as': {
+    type: 'string',
+    default: 'pass',
+    description:
+      'How to treat a PASS whose review artifact reports weak provenance (verdictSource other than "stated", or recoveryTurn: true): "pass" accepts it, "concerns" evaluates it as CONCERNS against the gate threshold, "fail" blocks',
+    enum: ['pass', 'concerns', 'fail'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_gates.code.threshold': {
+    type: 'string',
+    default: '',
+    description:
+      'Per-gate override: verdict floor for the code (pre-advance) review gate (empty = use workflow.review_threshold)',
+    enum: ['', 'pass', 'concerns'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_gates.arch.threshold': {
+    type: 'string',
+    default: '',
+    description:
+      'Per-gate override: verdict floor for the arch (pre-slice-plan) review gate (empty = use workflow.review_threshold)',
+    enum: ['', 'pass', 'concerns'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_gates.slice.threshold': {
+    type: 'string',
+    default: '',
+    description:
+      'Per-gate override: verdict floor for the slice (pre-tasks) review gate (empty = use workflow.review_threshold)',
+    enum: ['', 'pass', 'concerns'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_gates.tasks.threshold': {
+    type: 'string',
+    default: '',
+    description:
+      'Per-gate override: verdict floor for the tasks (pre-implementation) review gate (empty = use workflow.review_threshold)',
+    enum: ['', 'pass', 'concerns'],
+    scope: ConfigScope.Shared,
+  },
+  'workflow.review_gate_effective_date': {
+    type: 'string',
+    default: '',
+    description:
+      'Grandfathers slices/architecture designed before this date (YYYYMMDD, compared against the artifact\'s own dateCreated) out of every review gate boundary. Empty (default) applies no cutoff — every slice is subject to gating. Lets a project turn on review_enabled without retroactively demanding reviews for work completed before the gate existed.',
+    scope: ConfigScope.Shared,
+    validate: (value) => {
+      if (typeof value !== 'string') return 'must be a string';
+      if (value === '') return null; // empty = no cutoff (identity default)
+      if (!/^\d{8}$/.test(value)) return 'must be in YYYYMMDD format (e.g. "20260701")';
+      return null;
+    },
+  },
+  'git.integration_branch': {
+    type: 'string',
+    default: '',
+    description:
+      'Optional long-lived integration branch that work branches fork from and merge into instead of main (e.g. "dev/erik": a slice branch is still named "910-slice.foo", but is forked from and merged into "dev/erik"). Empty means no integration branch — work branches fork from and merge into main directly. Relative and contained: must not be absolute or escape via "..".',
+    scope: ConfigScope.Personal,
+    validate: (value) => {
+      if (typeof value !== 'string') return 'must be a string';
+      if (value === '') return null; // empty = no prefix (identity default)
+      if (value.startsWith('/')) return 'must be relative, not absolute';
+      if (value.startsWith('\\') || /^[A-Za-z]:/.test(value)) {
+        return 'must be relative, not an absolute Windows path';
+      }
+      if (value.split(/[/\\]/).includes('..')) return 'must not contain ".." segments';
+      if (value.endsWith('/') || value.endsWith('\\')) return 'must not have a trailing slash';
+      return null;
+    },
+  },
+  'devlog.max_bytes': {
+    type: 'number',
+    default: 200000,
+    description:
+      'DEVLOG.md size in bytes above which `cf check` warns and `cf devlog archive` moves older day sections into quarterly archives. Must exceed devlog.target_bytes.',
+    scope: ConfigScope.Shared,
+    validate: validatePositiveInteger,
+  },
+  'devlog.target_bytes': {
+    type: 'number',
+    default: 100000,
+    description:
+      'Size in bytes that archiving keeps DEVLOG.md at or under (the newest day sections stay). Must be below devlog.max_bytes.',
+    scope: ConfigScope.Shared,
+    validate: validatePositiveInteger,
+  },
+  'embed.comprehension_max_chars': {
+    type: 'number',
+    default: 20000,
+    description:
+      '`cf build --embed` inlines the codebase comprehension doc only when it is at most this many characters; a longer one is replaced by a one-line note naming its path. 0 never inlines it. The docs map is always inlined.',
+    scope: ConfigScope.Shared,
+    validate: (value) => {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        return 'must be a non-negative integer';
+      }
+      return null;
+    },
+  },
+  'rules.exclude': {
+    type: 'string',
+    default: '',
+    description:
+      'Comma-separated filename globs for scoped rule files to skip when installing rules (e.g. "dart.md,swift*.md"). Matching is basename-only. cf setup-ide skips matching rules and prunes a previously installed file that now matches, via its per-target manifest, unless it was edited since. Empty means install everything. Rules marked alwaysApply are not excludable.',
+    scope: ConfigScope.Shared,
+    validate: (value) => {
+      if (typeof value !== 'string') return 'must be a string';
+      if (value === '') return null; // empty = no exclusions (identity default)
+      // cf's installer matches each pattern literally (bash `case` glob rules),
+      // so " swift*.md" would silently never match. A pattern that quietly does
+      // nothing is the exact failure this key must not have.
+      for (const entry of parseRulesExclude(value)) {
+        if (entry === '') {
+          return 'must not contain an empty entry (check for a doubled or trailing comma)';
+        }
+        if (entry !== entry.trim()) {
+          return `entry "${entry}" must not have surrounding whitespace — patterns are matched literally`;
+        }
+      }
+      return null;
+    },
   },
 };
+
+/**
+ * A `rules.exclude` value as its list of patterns; empty means none. No
+ * trimming: the key's validator already rejects empty entries and whitespace
+ * around them. Every reader of the key splits it here.
+ */
+export function parseRulesExclude(value: string): string[] {
+  return value === '' ? [] : value.split(',');
+}

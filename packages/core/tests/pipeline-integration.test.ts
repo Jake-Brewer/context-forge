@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { PROMPT_FILE_RELATIVE_PATH } from '../src/services/constants.js';
+import { createTestProjectData } from './helpers/testData.js';
 import { FileProjectStore } from '../src/storage/FileProjectStore.js';
 import { createContextPipeline } from '../src/services/CoreServiceFactory.js';
 

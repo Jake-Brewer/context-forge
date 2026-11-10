@@ -6,12 +6,13 @@ phaseName: tasks
 guideRole: primary
 audience: [human, ai]
 description: Task breakdown for macOS application packaging and distribution
-status: not-started
+status: not_started
 dateCreated: 20250930
 dateUpdated: 20260207
 dependencies: [all-core-features]
 lldReference: 125-slice.application-packaging.md
 projectState: MVP complete, ready for distribution
+docType: tasks
 ---
 
 # Tasks: Application Packaging (macOS)

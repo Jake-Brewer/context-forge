@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Command } from 'commander';
 import { registerListCommand } from '../../src/commands/list.js';
 import type { ProjectModel } from '@context-forge/core';
+import { normalizeArtifactValue } from '../../../core/src/schema/normalizeArtifactValue.js';
 
 // ──────────────────────────────────────────────────
 // Shared mocks
@@ -16,10 +17,22 @@ const { mockGetAll, mockGetById, mockParseTaskFile, mockFindProjectByCwd } = vi.
 
 const mockBuildModel = vi.fn();
 const mockMergeProjectModels = vi.fn();
+const mockResolveInitiativePlanPath = vi.fn().mockResolvedValue(null);
 const mockParseSlicePlanIntrospector = vi.fn();
 const mockDetectDocuments = vi.fn();
+// Introspector-instance parseTaskFile/parseFrontmatter, used by the derived-status
+// resolution added in slice 911 — default to "nothing found" so tests that don't
+// care about derived status still see a clean not-started/checkbox-only result.
+const mockIntrospectorParseTaskFile = vi.fn().mockResolvedValue({
+  filePath: '', items: [], totalTasks: 0, completedTasks: 0, inferredStatus: 'not_started',
+});
+const mockIntrospectorParseFrontmatter = vi.fn().mockResolvedValue({ filePath: '', found: false, data: {} });
 
 vi.mock('@context-forge/core/node', () => ({
+  // No adoption artifacts on disk: registerAdoptedArtifacts (#137) finds nothing to set.
+  readAdoptionArtifacts: vi.fn().mockResolvedValue({ concept: null, derivedArchitectures: [], existingStatePlan: null }),
+  upstreamLag: vi.fn().mockResolvedValue(null),
+  formatUpstreamLagWarning: vi.fn(),
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getAll: mockGetAll,
     getById: mockGetById,
@@ -29,21 +42,28 @@ vi.mock('@context-forge/core/node', () => ({
   })),
   buildModel: (...args: unknown[]) => mockBuildModel(...args),
   mergeProjectModels: (...args: unknown[]) => mockMergeProjectModels(...args),
+  // Return null so archListAction falls through to the buildModel-driven path
+  // that these tests exercise (the initiative-plan-file path is covered elsewhere).
+  resolveInitiativePlanPath: (...args: unknown[]) => mockResolveInitiativePlanPath(...args),
   extractSliceIndex: vi.fn((v: string) => {
     const m = /^(\d+)-/.exec(v ?? '');
     return m ? parseInt(m[1], 10) : null;
   }),
+  normalizeArtifactValue: (value: string) => normalizeArtifactValue(value),
   resolveArtifactPath: vi.fn((field: string, stem: string) => {
     const dirs: Record<string, string> = {
       fileSlicePlan: 'project-documents/user/architecture',
       fileTasks: 'project-documents/user/tasks',
     };
     const dir = dirs[field];
-    return dir ? `${dir}/${stem}.md` : null;
+    const normalized = normalizeArtifactValue(stem);
+    return dir ? `${dir}/${normalized}.md` : null;
   }),
   ArtifactIntrospector: vi.fn().mockImplementation(() => ({
     parseSlicePlan: mockParseSlicePlanIntrospector,
     detectDocuments: mockDetectDocuments,
+    parseTaskFile: mockIntrospectorParseTaskFile,
+    parseFrontmatter: mockIntrospectorParseFrontmatter,
   })),
   parseSlicePlan: vi.fn(),
   parseTaskFile: (...args: unknown[]) => mockParseTaskFile(...args),
@@ -89,7 +109,7 @@ const sampleModel: Partial<ProjectModel> = {
       name: 'Core System',
       slices: [
         { index: '100', name: 'Auth', status: 'complete' },
-        { index: '101', name: 'Users', status: 'in-progress' },
+        { index: '101', name: 'Users', status: 'in_progress' },
       ],
       features: [],
       arch: { index: '100', name: 'core-system', status: 'active' },
@@ -102,7 +122,7 @@ const sampleModel: Partial<ProjectModel> = {
       name: 'Workflow System',
       slices: [
         { index: '160', name: 'Foundation', status: 'complete' },
-        { index: '165', name: 'Navigator', status: 'in-progress' },
+        { index: '165', name: 'Navigator', status: 'in_progress' },
       ],
       features: [],
       arch: { index: '160', name: 'workflow-system', status: 'active' },
@@ -114,8 +134,8 @@ const samplePlanResult = {
   filePath: '/tmp/test/project-documents/user/architecture/100-slices.test.md',
   entries: [
     { index: 100, name: 'Auth Feature', status: 'complete', isChecked: true, lineIndex: 0 },
-    { index: 101, name: 'Billing Feature', status: 'not-started', isChecked: false, lineIndex: 0 },
-    { index: 102, name: 'Dashboard', status: 'not-started', isChecked: false, lineIndex: 0 },
+    { index: 101, name: 'Billing Feature', status: 'not_started', isChecked: false, lineIndex: 0 },
+    { index: 102, name: 'Dashboard', status: 'not_started', isChecked: false, lineIndex: 0 },
   ],
   totalSlices: 3,
   completedSlices: 1,
@@ -130,7 +150,7 @@ const sampleTaskResult = {
   ],
   totalTasks: 3,
   completedTasks: 1,
-  inferredStatus: 'in-progress' as const,
+  inferredStatus: 'in_progress' as const,
 };
 
 function createProgram(): Command {
@@ -182,6 +202,8 @@ describe('cf list initiatives', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAll.mockResolvedValue([sampleProject]);
+    // No initiative-plan file → exercise the buildModel-driven fallback path.
+    mockResolveInitiativePlanPath.mockResolvedValue(null);
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -275,6 +297,8 @@ describe('cf list arch (alias)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAll.mockResolvedValue([sampleProject]);
+    // No initiative-plan file → exercise the buildModel-driven fallback path.
+    mockResolveInitiativePlanPath.mockResolvedValue(null);
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -311,6 +335,10 @@ describe('cf list slices', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAll.mockResolvedValue([sampleProject]);
+    mockIntrospectorParseTaskFile.mockResolvedValue({
+      filePath: '', items: [], totalTasks: 0, completedTasks: 0, inferredStatus: 'not_started',
+    });
+    mockIntrospectorParseFrontmatter.mockResolvedValue({ filePath: '', found: false, data: {} });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);

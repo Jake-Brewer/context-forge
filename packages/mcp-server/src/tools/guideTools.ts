@@ -1,10 +1,45 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { FileProjectStore, GuideManager, ConfigManager } from '@context-forge/core/node';
+import {
+  FileProjectStore,
+  GuideManager,
+  ConfigManager,
+  BranchGuardBlockedError,
+  BranchGuardWarnError,
+} from '@context-forge/core/node';
 import type { ProjectData } from '@context-forge/core';
-import { GuideDetector } from '@context-forge/core/node';
+import {
+  GuideDetector,
+  CHECKOUT_STATE_LABELS,
+  GUIDE_MANAGED_NOTICE,
+  GUIDE_METHODS,
+  GUIDE_METHOD_DEPRECATED_ALIASES,
+  GUIDE_STRATEGIES,
+  describeGuideStrategy,
+  guideExcludeNotices,
+  guideMethodDeprecationMessage,
+} from '@context-forge/core/node';
 import { resolveProjectId } from './resolveProjectId.js';
-import { errorResult, jsonResult } from './contextTools.js';
+import { errorResult, jsonResult, withNotices } from './contextTools.js';
+
+/** Every spelling `guide_install` accepts: canonical methods plus deprecated aliases. */
+const GUIDE_STRATEGY_INPUTS: readonly string[] = [
+  ...GUIDE_METHODS,
+  ...Object.keys(GUIDE_METHOD_DEPRECATED_ALIASES),
+];
+
+/** Strategy trade-offs for the tool description, from the same table the CLI help uses (D8). */
+const GUIDE_STRATEGY_DESCRIPTION = Object.entries(GUIDE_STRATEGIES)
+  .map(([name, { summary }]) => describeGuideStrategy(name, summary))
+  .join(', ');
+
+const SOURCE_PARAM_DESCRIPTION =
+  'Source repository URL, or the path of a local .tgz/.tar.gz guide archive (tarball installs only; ' +
+  'a relative path resolves against the project root, and the guide is recorded as version "local"). ' +
+  'Overrides guide.source config for this call.';
+const VERSION_PARAM_DESCRIPTION =
+  'Release tag to use instead of the newest, e.g. a tag listed by the remote (tarball installs only). ' +
+  'Cannot be combined with a local archive source.';
 
 interface ResolvedProject {
   projectPath: string;
@@ -38,7 +73,7 @@ export function registerGuideTools(server: McpServer): void {
       title: 'Guide Status',
       description:
         'Check the installation status of the AI project guide for a project. ' +
-        'Returns whether the guide is installed, what method was used (submodule/clone/manual), ' +
+        'Returns whether the guide is installed, what method was used (submodule/clone/tarball), ' +
         'current version, latest available version, and whether an update is available.',
       inputSchema: {
         projectId: z
@@ -68,7 +103,17 @@ export function registerGuideTools(server: McpServer): void {
           }
         }
 
-        return jsonResult(worktreeSync ? { ...info, worktreeSync } : info);
+        // info.checkout is the raw state; pair it with display text so a
+        // client need not carry its own label table.
+        const checkoutLabel = info.checkout ? CHECKOUT_STATE_LABELS[info.checkout] : undefined;
+
+        return jsonResult({
+          ...info,
+          ...(checkoutLabel ? { checkoutLabel } : {}),
+          ...(worktreeSync ? { worktreeSync } : {}),
+          // Same gate as the CLI: the notice describes an existing directory.
+          ...(info.installed ? { managedNotice: GUIDE_MANAGED_NOTICE } : {}),
+        });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         return errorResult(message);
@@ -83,8 +128,8 @@ export function registerGuideTools(server: McpServer): void {
       title: 'Install Guide',
       description:
         'Install the AI project guide into a project directory. ' +
-        'Supports three strategies: "submodule" (default, requires git repo), ' +
-        '"clone" (standalone git clone), or "manual" (tarball download, no git needed). ' +
+        `Strategies: ${GUIDE_STRATEGY_DESCRIPTION}. ` +
+        'Omit strategy to use the guide.git_strategy config value. ' +
         'Error if the guide is already installed — use guide_update instead.',
       inputSchema: {
         projectId: z
@@ -92,23 +137,34 @@ export function registerGuideTools(server: McpServer): void {
           .optional()
           .describe('Project ID or name. Omit to resolve from CWD.'),
         strategy: z
-          .enum(['submodule', 'clone', 'manual'])
+          // 'manual' is a deprecated alias for 'tarball'; accepted on input so
+          // existing callers keep working, normalized by GuideManager.install().
+          .enum(GUIDE_STRATEGY_INPUTS)
           .optional()
-          .describe('Installation strategy. Overrides guide.git_strategy config for this call.'),
-        source: z
-          .string()
-          .optional()
-          .describe('Source repository URL. Overrides guide.source config for this call.'),
+          .describe(
+            "Installation strategy. Overrides guide.git_strategy config for this call. " +
+              "'manual' is a deprecated alias for 'tarball'."
+          ),
+        source: z.string().optional().describe(SOURCE_PARAM_DESCRIPTION),
+        version: z.string().optional().describe(VERSION_PARAM_DESCRIPTION),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    async ({ projectId, strategy, source }) => {
+    async ({ projectId, strategy, source, version }) => {
       try {
         const { projectPath } = await resolveProjectWithData(projectId);
         const cm = new ConfigManager(projectPath);
         const manager = new GuideManager(projectPath, cm);
-        const result = await manager.install(strategy, source);
-        return jsonResult(result);
+        const result = await manager.install(strategy, source, { version });
+        // Deprecation surfaces as a structured notice rather than a log line,
+        // since an MCP client has no stderr channel to read (D4). Same shared
+        // shape every other tool uses.
+        return withNotices(jsonResult(result), [
+          ...(result.deprecatedAlias
+            ? [guideMethodDeprecationMessage(result.deprecatedAlias, result.method)]
+            : []),
+          ...guideExcludeNotices(result),
+        ]);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         return errorResult(message);
@@ -124,21 +180,51 @@ export function registerGuideTools(server: McpServer): void {
       description:
         'Update an existing AI project guide installation to the latest version. ' +
         'Uses the same strategy that was used for installation. ' +
-        'Error if the guide is not installed — use guide_install first.',
+        'Error if the guide is not installed — use guide_install first. ' +
+        'Updates may require branch confirmation: if the current branch is not the configured ' +
+        'trunk/integration branch, this tool returns an error asking you to retry with ' +
+        'confirm: true. That response is not a transient failure — it is the expected first ' +
+        'step of a two-call confirmation flow (there is no interactive prompt in this context).',
       inputSchema: {
         projectId: z
           .string()
           .optional()
           .describe('Project ID or name. Omit to resolve from CWD.'),
+        confirm: z
+          .boolean()
+          .optional()
+          .describe(
+            'Set to true to proceed with an update from a branch that is not the configured ' +
+              'trunk/integration branch. Omit on the first call; if the response asks for ' +
+              'confirmation, retry the same call with confirm: true.'
+          ),
+        source: z.string().optional().describe(SOURCE_PARAM_DESCRIPTION),
+        version: z.string().optional().describe(VERSION_PARAM_DESCRIPTION),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    async ({ projectId }) => {
+    async ({ projectId, confirm, source, version }) => {
       try {
         const { projectPath, project } = await resolveProjectWithData(projectId);
         const cm = new ConfigManager(projectPath);
         const manager = new GuideManager(projectPath, cm);
-        const result = await manager.update();
+
+        const sourceOptions = { source, version };
+        let result;
+        try {
+          result = await manager.update(sourceOptions);
+        } catch (error) {
+          if (error instanceof BranchGuardWarnError) {
+            if (confirm !== true) {
+              return errorResult(`${error.message} Retry this call with confirm: true to proceed.`);
+            }
+            result = await manager.update({ ...sourceOptions, confirmed: true });
+          } else if (error instanceof BranchGuardBlockedError) {
+            return errorResult(error.message);
+          } else {
+            throw error;
+          }
+        }
 
         // Auto-sync all worktrees with registered paths
         let syncResults: { worktreePath: string; success: boolean; error?: string }[] | undefined;
@@ -151,7 +237,10 @@ export function registerGuideTools(server: McpServer): void {
           }
         }
 
-        return jsonResult(syncResults ? { ...result, syncResults } : result);
+        return withNotices(
+          jsonResult(syncResults ? { ...result, syncResults } : result),
+          guideExcludeNotices(result)
+        );
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         return errorResult(message);

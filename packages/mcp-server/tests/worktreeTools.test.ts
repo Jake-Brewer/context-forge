@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { ProjectData, WorktreeContext } from '@context-forge/core';
+import { RangeRestoreSkipReason } from '@context-forge/core';
 import { registerWorktreeTools } from '../src/tools/worktreeTools.js';
 
 // --- Mocks ---
@@ -22,6 +23,7 @@ const mockListGitWorktrees = vi.fn().mockResolvedValue([]);
 vi.mock('@context-forge/core/node', () => ({
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getById: mockGetById,
+    getAll: vi.fn().mockResolvedValue([]),
     update: mockUpdate,
   })),
   WorktreeService: vi.fn().mockImplementation(() => ({
@@ -542,6 +544,27 @@ describe('worktree_update', () => {
     expect(parsed.overlaps).toBeUndefined();
     expect(mockFindOverlaps).not.toHaveBeenCalled();
   });
+
+  it('ignores an extra isDefault argument: it never reaches the service', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetWorktree.mockResolvedValue(MOCK_WORKTREE);
+    mockUpdateWorktree.mockResolvedValue({ ...MOCK_WORKTREE, name: 'Renamed' });
+
+    const result = await client.callTool({
+      name: 'worktree_update',
+      arguments: {
+        projectId: MOCK_PROJECT.id,
+        worktree: MOCK_WORKTREE.id,
+        name: 'Renamed',
+        isDefault: true,
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const updates = mockUpdateWorktree.mock.calls[0][2] as Record<string, unknown>;
+    expect(updates).toEqual({ name: 'Renamed' });
+    expect('isDefault' in updates).toBe(false);
+  });
 });
 
 describe('worktree_rm', () => {
@@ -573,6 +596,40 @@ describe('worktree_rm', () => {
     const parsed = parseResult(result) as { removed: WorktreeContext; migrated: boolean };
     expect(parsed.removed.id).toBe('wt_test_001');
     expect(parsed.migrated).toBe(false);
+  });
+
+  it('returns restoredRange and rangeNotRestored as the service reports them', async () => {
+    mockGetById.mockResolvedValue(MOCK_PROJECT);
+    mockGetWorktree.mockResolvedValue(MOCK_WORKTREE);
+    const args = { name: 'worktree_rm', arguments: { projectId: MOCK_PROJECT.id, worktree: MOCK_WORKTREE.id } };
+
+    const defaultWorktree = { id: 'wt_main', name: 'main-line' };
+
+    mockRemoveWorktree.mockResolvedValueOnce({
+      removed: MOCK_WORKTREE,
+      migrated: false,
+      restoredRange: [100, 799],
+      defaultWorktree,
+    });
+    const restored = parseResult(await client.callTool(args)) as {
+      restoredRange?: [number, number];
+      defaultWorktree?: unknown;
+    };
+    expect(restored.restoredRange).toEqual([100, 799]);
+    expect(restored.defaultWorktree).toEqual(defaultWorktree);
+
+    mockRemoveWorktree.mockResolvedValueOnce({
+      removed: MOCK_WORKTREE,
+      migrated: false,
+      rangeNotRestored: { reason: RangeRestoreSkipReason.WouldOverlap, defaultRange: [100, 499] },
+      defaultWorktree,
+    });
+    const skipped = parseResult(await client.callTool(args)) as {
+      rangeNotRestored?: unknown;
+      defaultWorktree?: unknown;
+    };
+    expect(skipped.rangeNotRestored).toEqual({ reason: RangeRestoreSkipReason.WouldOverlap, defaultRange: [100, 499] });
+    expect(skipped.defaultWorktree).toEqual(defaultWorktree);
   });
 
   it('returns migrated: true when last worktree removed', async () => {

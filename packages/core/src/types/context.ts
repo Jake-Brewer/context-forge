@@ -8,6 +8,13 @@ export interface ContextData {
   template: string;
   fileSlice: string;
   fileTasks: string;
+  /**
+   * Task files found on disk for the current slice, rendered for prompts
+   * (`{task-files}`): one path, or comma-separated paths when the tasks file is
+   * split into parts. Left undefined when no task file exists, so the
+   * placeholder stays visible instead of naming a file that isn't there.
+   */
+  taskFiles?: string;
   instruction: string;
   developmentPhase?: string;
   fileArch?: string;
@@ -15,6 +22,7 @@ export interface ContextData {
   fileHLD?: string;
   fileSpec?: string;
   fileConcept?: string;
+  fileComprehension?: string;
   workType?: 'start' | 'continue';
   dateProject?: string;
   recentEvents: string;
@@ -22,6 +30,14 @@ export interface ContextData {
   worktreeName?: string;
   worktreeIndexStart?: number;
   worktreeIndexEnd?: number;
+  /** Configured git.integration_branch for the checkout; empty when unset. */
+  integrationBranch?: string;
+  /** Branch work forks from and merges into: integrationBranch if set, else the default trunk. */
+  targetBranch?: string;
+  /** Guide fragment for workflow.permissiveness; empty or undefined when none applies. */
+  permissivenessFragment?: string;
+  /** Rendered `### Codebase Reference` section (slice 274); empty or undefined when the profile lists neither variable. */
+  codebaseReference?: string;
 }
 
 /**

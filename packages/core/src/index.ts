@@ -9,10 +9,43 @@ export type { IProjectStore, IStorageService, StorageReadResult } from './storag
 export * from './introspection/index.js';
 
 // Guide types (browser-safe — no fs dependencies)
-export type { GuideInfo, GuideMethod, InstallResult, UninstallResult, UpdateResult, SyncResult } from './guides/types.js';
+export type { GuideInfo, GuideMethod, InstallResult, UninstallResult, UpdateResult, SyncResult, SubmoduleCheckoutState, EnsureCheckoutResult, GuidePreview, GuideVersionChange } from './guides/types.js';
+export {
+  CHECKOUT_STATE_LABELS,
+  GUIDE_MANAGED_NOTICE,
+  GUIDE_METHODS,
+  GUIDE_METHOD_DEPRECATED_ALIASES,
+  GUIDE_STRATEGIES,
+  DEFAULT_GUIDE_METHOD,
+  describeGuideStrategy,
+  guideMethodDeprecationMessage,
+  guideExcludeNotices,
+  type GuideExcludeNoticeSource,
+} from './guides/types.js';
 
 // Project schema (field metadata, aliases, phase maps)
 export * from './schema/projectSchema.js';
+
+// Frontmatter schema registry (per-docType field validation)
+export {
+  FRONTMATTER_SCHEMAS,
+  VALID_STATUSES,
+  validateFrontmatter,
+  inferDocTypeFromPath,
+  inferFieldsFromPath,
+  type FrontmatterFieldDef,
+  type DocTypeSchema,
+  type FrontmatterFinding,
+} from './schema/frontmatterSchema.js';
+
+// Slice-design structure check (required template headings)
+export {
+  requiredHeadings,
+  documentHeadingKeys,
+  missingHeadings,
+  type RequiredHeading,
+  type HeadingKey,
+} from './schema/sliceDesignValidator.js';
 
 // Git utilities
 export { GitWorktreeDiscovery, parseWorktreeListOutput } from './git/index.js';
@@ -29,4 +62,23 @@ export {
 } from './project-defaults.js';
 
 // Worktree overlay (browser-safe — pure object mapping, no fs/path)
-export { applyWorktreeOverlay } from './utils/worktree-overlay.js';
+export {
+  applyWorktreeOverlay,
+  isInIndexRange,
+  getWorktreeIndexRange,
+  getWorktreeRangeOverride,
+  resolveWorktreeForPath,
+  type WorktreeMatch,
+} from './utils/worktree-overlay.js';
+
+// Default worktree identification (the isDefault marker, never the name)
+export { isDefaultWorktree, findDefaultWorktree } from './utils/defaultWorktree.js';
+
+// Onboarding — single-source recipe for the onboarding command, skill and MCP tool (pure string code)
+export {
+  ONBOARD_SURFACES,
+  GENERATED_NOTICE,
+  renderOnboardRecipe,
+  type OnboardSurface,
+  type OnboardSurfaceProfile,
+} from './onboarding/onboardRecipe.js';

@@ -9,47 +9,43 @@ import {
   ConfigManager,
   getStoragePath,
   createVersionedBackup,
+  applyFixPlan,
+  scopeCheck,
+  resolveFixInvokingPath,
+  planFixRun,
+  upstreamLag,
+  formatUpstreamLagWarning,
 } from '@context-forge/core/node';
-import type { ConsistencyCheckResult, ConsistencyFinding } from '@context-forge/core';
-import { applyWorktreeOverlay, resolveProject } from '@context-forge/core';
+import {
+  type ResolvedProject,
+  resolveProject,
+  mergeCheckResults,
+  buildAttributedViews,
+  runAttributed,
+} from '@context-forge/core';
 import { resolveProjectId } from './resolveProjectId.js';
 
 function errorResult(message: string): { content: { type: 'text'; text: string }[]; isError: true } {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-function jsonResult(data: unknown): { content: { type: 'text'; text: string }[] } {
-  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+/**
+ * Add a `warnings` entry when the checkout the project resolved to trails its
+ * upstream (#104). Local only; absent when current or not applicable.
+ */
+async function withUpstreamLagWarning<T extends { warnings?: string[] }>(
+  project: ResolvedProject,
+  result: T,
+): Promise<T> {
+  if (!project.projectPath) return result;
+  const lag = await upstreamLag(project.projectPath);
+  if (!lag || lag.behind === 0) return result;
+  const name = project.resolvedWorktree?.name ?? project.name;
+  return { ...result, warnings: [...(result.warnings ?? []), formatUpstreamLagWarning(name, lag)] };
 }
 
-/**
- * Merge findings from multiple checkAll runs, deduplicating by rule+location+description.
- * TODO: Extract to @context-forge/core shared utility (200-slices future work item 7)
- */
-function mergeCheckResults(results: ConsistencyCheckResult[]): ConsistencyCheckResult {
-  if (results.length === 1) return results[0];
-  const seen = new Set<string>();
-  const allFindings: ConsistencyFinding[] = [];
-  for (const result of results) {
-    for (const finding of result.findings) {
-      const key = `${finding.rule}|${finding.location}|${finding.description}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        allFindings.push(finding);
-      }
-    }
-  }
-  const projectPath = results[0].projectPath;
-  const errors = allFindings.filter((f) => f.severity === 'error').length;
-  const warnings = allFindings.filter((f) => f.severity === 'warning').length;
-  const infos = allFindings.filter((f) => f.severity === 'info').length;
-  const total = allFindings.length;
-  const parts: string[] = [];
-  if (errors > 0) parts.push(`${errors} error${errors !== 1 ? 's' : ''}`);
-  if (warnings > 0) parts.push(`${warnings} warning${warnings !== 1 ? 's' : ''}`);
-  if (infos > 0) parts.push(`${infos} info${infos !== 1 ? 's' : ''}`);
-  const summary = total === 0 ? 'No inconsistencies found' : `${total} finding${total !== 1 ? 's' : ''}: ${parts.join(', ')}`;
-  return { projectPath, findings: allFindings, totalFindings: total, errors, warnings, infos, summary };
+function jsonResult(data: unknown): { content: { type: 'text'; text: string }[] } {
+  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
 }
 
 export function registerWorkflowTools(server: McpServer): void {
@@ -106,8 +102,11 @@ export function registerWorkflowTools(server: McpServer): void {
         const result = await collector.collect(project.projectPath, args.status ?? 'all');
 
         if (!args.includeMarkdown) {
-          const { markdown: _md, ...rest } = result;
-          return jsonResult(rest);
+          // Omit the markdown field from the JSON-only response
+          const withoutMarkdown = Object.fromEntries(
+            Object.entries(result).filter(([key]) => key !== 'markdown'),
+          );
+          return jsonResult(withoutMarkdown);
         }
 
         return jsonResult(result);
@@ -126,7 +125,7 @@ export function registerWorkflowTools(server: McpServer): void {
       description:
         'Get the current workflow status for a project. Returns project phase, active slice status ' +
         '(needs-design, needs-tasks, in-implementation, complete), task progress, and slice plan overview. ' +
-        'Response shape: { project, phase, activeSlice: { name, index, status, taskProgress? }, slicePlan?, summary }.',
+        'Response shape: { project, phase, activeSlice: { name, index, status, taskProgress?, retroactive? }, slicePlan?, summary }.',
       inputSchema: {
         projectId: z
           .string()
@@ -151,12 +150,13 @@ export function registerWorkflowTools(server: McpServer): void {
           );
         }
 
-        const nav = new WorkflowNavigator();
+        const config = new ConfigManager(project.projectPath);
+        const nav = new WorkflowNavigator(config);
         const status = await nav.getStatus(project);
-        const result = project.resolvedWorktree
+        const withWorktree = project.resolvedWorktree
           ? { ...status, worktree: project.resolvedWorktree }
           : status;
-        return jsonResult(result);
+        return jsonResult(await withUpstreamLagWarning(project, withWorktree));
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         return errorResult(`Error: ${msg}`);
@@ -172,7 +172,8 @@ export function registerWorkflowTools(server: McpServer): void {
       description:
         'Get the recommended next action for a project based on its current state. ' +
         'Returns a prioritized recommendation with rationale and optional suggested CLI command. ' +
-        'Response shape: { recommendation, rationale, suggestedCommand?, slice?, phase?, summary }.',
+        'Response shape: { recommendation, rationale, suggestedCommand?, slice?, phase?, summary, offers?: [{ id, message }] }. ' +
+        'offers are optional suggestions (e.g. id "setup-ci"); key on id, never on message.',
       inputSchema: {
         projectId: z
           .string()
@@ -197,12 +198,13 @@ export function registerWorkflowTools(server: McpServer): void {
           );
         }
 
-        const nav = new WorkflowNavigator();
+        const config = new ConfigManager(project.projectPath);
+        const nav = new WorkflowNavigator(config);
         const next = await nav.getNext(project);
-        const result = project.resolvedWorktree
+        const withWorktree = project.resolvedWorktree
           ? { ...next, worktree: project.resolvedWorktree }
           : next;
-        return jsonResult(result);
+        return jsonResult(await withUpstreamLagWarning(project, withWorktree));
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         return errorResult(`Error: ${msg}`);
@@ -219,11 +221,16 @@ export function registerWorkflowTools(server: McpServer): void {
         'Run consistency checks on a project to detect mismatches between related artifacts. ' +
         'Detects: task completion vs. slice plan checkbox, frontmatter status vs. computed state, ' +
         'missing artifact cross-references, plan checkbox vs. frontmatter status, ' +
-        'duplicate slice indices, missing plan status field, plan status vs. entries, architecture status vs. plans. ' +
+        'duplicate slice indices, missing plan status field, plan status vs. entries, architecture status vs. plans, ' +
+        'pending PM decisions in a slice design (warning only, never blocks). ' +
         'Defaults to all-slices mode; provide sliceIndex to narrow to one slice. ' +
-        'With fix=true, applies non-destructive corrections to fixable findings. ' +
+        'With fix=true, applies non-destructive corrections to fixable findings. With worktrees, ' +
+        'each fix is written only in the checkout that owns it; writes into other checkouts are ' +
+        'committed there (unless noCommit=true, which commits nothing and leaves every written ' +
+        'file uncommitted; fixLog lists each file written with its worktree), and fixes left ' +
+        'unwritten are listed in deferred with a reason. ' +
         'Response shape: { projectPath, findings[], totalFindings, errors, warnings, infos, summary, ' +
-        'fixed?, fixLog?, fixErrors? }.',
+        'fixed?, fixLog?, fixErrors?, deferred?, commits? }.',
       inputSchema: {
         projectId: z
           .string()
@@ -237,6 +244,10 @@ export function registerWorkflowTools(server: McpServer): void {
           .boolean()
           .optional()
           .describe('Apply non-destructive corrections to fixable findings. Default: false (or workflow.auto_fix config).'),
+        noCommit: z
+          .boolean()
+          .optional()
+          .describe('With fix, write fixes but commit nothing in any checkout, leaving the files uncommitted for the caller. Default: false.'),
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
@@ -253,14 +264,14 @@ export function registerWorkflowTools(server: McpServer): void {
         }
 
         const introspector = new ArtifactIntrospector();
-        const checker = new ConsistencyChecker(introspector);
+        const config = new ConfigManager(project.projectPath);
+        const checker = new ConsistencyChecker(introspector, config);
 
         // Determine fix mode: explicit arg > config key > false
         let fixMode = args.fix ?? false;
         if (!fixMode) {
           try {
-            const cm = new ConfigManager(project.projectPath);
-            const autoFixResult = await cm.get('workflow.auto_fix');
+            const autoFixResult = await config.get('workflow.auto_fix');
             if (autoFixResult.value === true) {
               fixMode = true;
             }
@@ -272,26 +283,31 @@ export function registerWorkflowTools(server: McpServer): void {
         // Build project views: one per worktree overlay so all workflow fields are visible.
         // Findings are merged and deduplicated — aggregate rules (filesystem scan) run per
         // view but produce the same results, so deduplication collapses them correctly.
-        // TODO: Extract merge logic to @context-forge/core shared utility (200-slices future work item 7)
-        const worktrees = project.worktrees ?? [];
-        const projectViews = worktrees.length > 0
-          ? worktrees.map((wt) => applyWorktreeOverlay(project, wt.id))
-          : [project];
-
+        // Each view stays paired with its worktree so findings can be attributed
+        // before the merge; the dedup key has no worktree component (#87).
+        // Shared with cf check so the count-not-presence rule cannot drift
+        // between the two consumers of the same merge.
+        const projectViews = buildAttributedViews(project);
+        // Top-level projectPath means the invoking checkout. For a read-only
+        // check or a single checkout that is the project root. In fix mode
+        // with worktrees it is the checkout the server runs in (slice 213
+        // D5b), so an agent in worktree B gets B's fixes as an uncommitted diff.
+        const scope = scopeCheck(checker, projectViews, args.sliceIndex ?? null);
         let result;
-        if (args.sliceIndex !== undefined) {
-          // Single-slice mode
-          const sliceViews = projectViews.map((v) => ({ ...v, fileSlice: `${args.sliceIndex}-slice` }));
-          const checkResults = await Promise.all(sliceViews.map((v) =>
-            fixMode ? checker.fix(v) : checker.check(v),
-          ));
-          result = mergeCheckResults(checkResults);
+        if (fixMode) {
+          // Same plan-then-apply as cf check --fix; MCP never prompts.
+          let invokingPath: string;
+          try {
+            invokingPath = await resolveFixInvokingPath(scope.views, project.projectPath);
+          } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error);
+            return errorResult(`Error: ${msg}`);
+          }
+          const { plan } = await planFixRun(project, scope, invokingPath);
+          result = await applyFixPlan(checker, plan, { commit: !args.noCommit });
         } else {
-          // All-slices mode (no confirmation prompt in MCP)
-          const checkResults = await Promise.all(projectViews.map((v) =>
-            fixMode ? checker.fixAll(v) : checker.checkAll(v),
-          ));
-          result = mergeCheckResults(checkResults);
+          const checkResults = await runAttributed(scope.views, scope.runCheck);
+          result = mergeCheckResults(checkResults, project.projectPath);
         }
 
         return jsonResult(result);

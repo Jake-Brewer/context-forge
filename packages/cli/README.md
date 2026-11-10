@@ -9,7 +9,10 @@ Terminal interface for Context Forge — context assembly, project management, w
 ## Installation
 
 ```bash
-# Install globally
+# Install globally (recommended: meta-package installs both CLI and MCP server)
+npm install -g @context-forge/context-forge
+
+# Or install the CLI alone
 npm install -g @context-forge/cli
 
 # Initialize a project (from the project root)
@@ -31,28 +34,19 @@ cf install-commands
 # All commands are discoverable
 cf --help
 cf project --help
-#etc. 
 
 # Check project status
 cf status
-
-# Generate a context prompt and copy to clipboard
-cf build | pbcopy
-
-# Generate with phase override
-cf build --phase task-breakdown
 
 # Set project fields
 cf set phase 6
 cf set slice 175
 
-# Confirm updates (if you like)
-cf status
-
 # Browse project artifacts
-cf arch list        # Architecture initiatives
-cf slice list       # Slices in the active plan
-cf tasks list       # Task files with progress
+cf list initiatives    # Architecture initiatives
+cf list slices         # Slices in the active plan
+cf list tasks          # Task files with progress
+cf list items          # Individual tasks from the active task file
 
 # What should I do next?
 cf next
@@ -80,32 +74,80 @@ When installed via `cf install-commands`, these slash commands are available dir
 | `/cf:prompt` | Get or list prompt templates (e.g., `/cf:prompt P5` or `/cf:prompt list`) |
 | `/cf:project` | Manage projects (e.g., `/cf:project list`, `/cf:project --schema`) |
 | `/cf:next` | Show recommended next action |
+| `/cf:check` | Run consistency checks on project artifacts |
+| `/cf:onboard` | AI-guided project setup, then hands off to `cf build`. On an existing codebase it stops after one line naming `sq onboard` and the opt-out |
 
 Each command runs `cf` under the hood — same CWD-based project resolution, same output.
 
 ## Commands Reference
 
+### Listing Commands
+
+| Command | Description |
+|---------|-------------|
+| `cf list projects` | List all registered projects |
+| `cf list initiatives` | Architecture initiatives with slice counts |
+| `cf list arch` | Alias for `cf list initiatives` |
+| `cf list plans` | Slice plan files with completion progress |
+| `cf list slices` | Slices from the active plan with status. A recorded-history entry from an adopted codebase shows `✓ retroactive`; see [what the marker exempts](../../docs/REVIEW-GATING.md#retroactive-slices) |
+| `cf list tasks` | Task files from the plan with progress |
+| `cf list items` | Individual tasks from the active task file |
+
+### Project & Workflow
+
 | Command | Usage | Description |
 |---------|-------|-------------|
-| `cf init` | `cf init` | Register the current directory as a Context Forge project |
-| `cf status` | `cf status [--project <id>] [--json]` | Show workflow status for the active project |
-| `cf next` | `cf next [--project <id>] [--json]` | Show recommended next action |
-| `cf build` | `cf build [--project <id>] [--phase] [--slice] [--instruction] [--tasks] [--additional]` | Generate context prompt to stdout |
-| `cf set` | `cf set <field> <value>` | Set a project field (shortcut for `cf project set`) |
-| `cf get` | `cf get [--json]` | Show all project fields (shortcut for `cf project get`) |
-| `cf arch` | `cf arch list [--json]` | List architecture initiatives with progress |
-| `cf plan` | `cf plan list [--json]` | List slice plan files with progress |
-| `cf slice` | `cf slice list [--json]` | List slices from the active plan with status |
-| `cf tasks` | `cf tasks list [--json]` | List task files from the plan with progress |
-| `cf tasks items` | `cf tasks items [--json]` | Show individual tasks from the active task file |
-| `cf worktree` | `cf worktree init\|list\|get\|update\|rm` | Manage git worktree contexts for parallel initiatives |
-| `cf config` | `cf config list\|get\|set` | Manage configuration |
+| `cf init` | `cf init [--json]` | Register the current directory as a project. `cf init --json` prints the step results; a failed step exits 1, with or without `--json`. On an existing codebase it prints one line naming `sq onboard` and the opt-out. See [Adoption Primitives](../../docs/ADOPTION-PRIMITIVES.md) |
+| `cf detect` | `cf detect [--path <dir>] [--json]` | Read-only report of what a directory holds and whether it needs adoption. Works on unregistered directories. See [Adoption Primitives](../../docs/ADOPTION-PRIMITIVES.md) |
+| `cf status` | `cf status [--json]` | Show workflow status |
+| `cf next` | `cf next [--json]` | Show recommended next action. For an unadopted or incompletely adopted repo it prints one line naming `sq onboard` and the opt-out; otherwise it navigates normally |
+| `cf build` | `cf build [--phase] [--slice] [--json]` | Generate context prompt |
+| `cf set` | `cf set <field> <value>` | Set a project field (for example `cf set comprehension <path>` registers the codebase comprehension doc; `""` clears it) |
+| `cf get` | `cf get [--json]` | Show all project fields |
+| `cf check` | `cf check [--fix] [--slice <n>] [--json]` | Run consistency checks |
+| `cf future` | `cf future [--status <filter>] [--json]` | Consolidated future work |
 | `cf project` | `cf project list\|get\|set\|rm` | Manage projects |
-| `cf future` | `cf future [--project <id>] [--status <filter>] [--json]` | Show consolidated future work |
-| `cf check` | `cf check [--fix] [--slice <n>] [--yes] [--json]` | Run consistency checks across all worktrees |
-| `cf backup` | `cf backup` | Create versioned backup of project data (keeps last 10) |
-| `cf prompt` | `cf prompt list\|get <phase>` | Access prompt templates with variable substitution |
-| `cf guides` | `cf guides install\|status\|update` | Manage ai-project-guide templates |
+| `cf prompt` | `cf prompt list\|get <phase> [--path <dir>] [--comprehension <file>]` | Access prompt templates. `--path` uses the registered project at that directory; `--comprehension` names a codebase comprehension file for prompts whose profile takes adoption inputs. See [Adoption Primitives](../../docs/ADOPTION-PRIMITIVES.md) |
+| `cf rules inventory` | `cf rules inventory --json` | List the guide's rule files, the project's own rule sources and the stored resolutions as JSON. Read-only |
+| `cf rules resolve` | `cf rules resolve <guideRule> <projectSource> --statement "<text>"` | Record the decision about a conflict between a guide rule and a project rule source. Run `cf setup-ide <target>` afterwards to apply it |
+| `cf docs map` | `cf docs map` | Write or refresh `project-documents/user/architecture/050-docs-map.{project}.md`, an index linking the project's existing README, `docs/` and ADRs in place |
+| `cf version` | `cf version [--json]` | Show version (JSON includes breaking changes) |
+| `cf help` | `cf help [--json]` | Show help (JSON outputs command catalog) |
+
+### Administration
+
+| Command | Description |
+|---------|-------------|
+| `cf worktree init\|list\|get\|update\|rm` | Manage git worktree contexts |
+| `cf config get\|set` | Manage configuration |
+| `cf guides install\|status\|update\|uninstall` | Manage ai-project-guide templates |
+| `cf backup` | Create versioned backup of project data |
+| `cf install-commands` | Install Claude Code slash commands |
+| `cf setup-ide claude` | Configure IDE integration |
+
+## Rule Resolutions
+
+An adopted project keeps its own rules (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, ...) beside the guide's. `cf rules inventory` lists both sides; for a composite file such as `CLAUDE.md` it gives the line range of the managed block, so only the project-owned text outside it is compared. The comparison is the agent's job (guide prompt `conventions-reconciliation`); cf never judges whether two rules conflict. Each decision is recorded with `cf rules resolve`. Each guide rule in the inventory has an `agents` field: the audiences from its `agents:` marker (`claude`, `agents`, `copilot`, `cursor`), or `null` when it goes to every agent. A resolution renders only in the managed blocks its rule reaches.
+
+Resolutions are stored in `.context-forge/rule-resolutions.json`, which is committed to git:
+
+```json
+{
+  "version": 1,
+  "resolutions": [
+    { "guideRule": "git.md", "projectSource": "CLAUDE.md",
+      "statement": "Every change goes through a PR; never commit directly to main." }
+  ]
+}
+```
+
+- A resolution is identified by the file pair (`guideRule` is the rule's file name in the guide, `projectSource` a checkout-relative path), never by rule text, so rewording a guide rule leaves it in force.
+- `statement` is one line, stored and rendered verbatim. It may not contain a line break, a backtick in either name, or any context-forge marker comment. A malformed file fails `setup-ide` before anything is written.
+- Every `setup-ide` run renders the live resolutions as a `## Project Rule Resolutions` section at the end of each managed block (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`). Re-running gives identical files. Without a resolutions file the output is unchanged.
+- Resolutions on a scoped guide rule excluded by `rules.exclude` are skipped without comment.
+- If a resolution names a guide rule the guide no longer has, or a project file that no longer exists, `setup-ide` warns on stderr (exit code 0) and does not render it.
+- To remove a resolution, edit the JSON file by hand.
+- Precedence is advisory. The conflicting guide text stays in the block and in installed scoped rule files; the section tells the agent which rule wins.
 
 ## Common Options
 
@@ -172,23 +214,9 @@ cf set slice 166
 
 Setting `fileSlice` always auto-sets `fileTasks` to match.
 
-## Discovery Commands
-
-Browse project artifacts at every level:
-
-```bash
-cf arch list       # Architecture initiatives with slice counts
-cf plan list       # Slice plan files with completion progress
-cf slice list      # Slices from the active plan with status markers
-cf tasks list      # Task files from the plan with completion counts
-cf tasks items     # Individual task items from the active task file
-```
-
-All accept `--json` and `--project <name|id>`.
-
 ## Architecture
 
-The CLI wraps `@context-forge/core` directly (no MCP layer), following the same pattern as the Electron package. All core services are imported from `@context-forge/core/node`.
+The CLI wraps `@context-forge/core` directly (no MCP layer). All core services are imported from `@context-forge/core/node`.
 
 ## Development (monorepo)
 
@@ -200,6 +228,17 @@ pnpm --filter @context-forge/cli typecheck # Type check
 ```
 
 ## Changelog
+
+### v0.6.0
+
+- **Compound workflow commands** — `cf concept`, `cf initiatives`, `cf arch <n>`, `cf plan <n>`, `cf slice <n>`, `cf tasks <n>`, `cf implement <n>` set artifact + phase + build context in one step
+- **`cf list` consolidation** — all artifact listing under `cf list <type>` (`cf list slices`, `cf list tasks`, etc.)
+- **Slash commands** — 16 Claude Code slash commands for compound commands, status, and workflow
+- **`cf help --json`** — machine-readable command catalog for agent consumption
+- **`cf version --json`** — version introspection with breaking changes tracking
+- **Structured JSON errors** — error codes on all `UserError` instances, JSON error output via `--json` or `CF_JSON=1`
+- **Idempotent set** — `cf set` detects no-change and skips write
+- **`cf guides uninstall`** — clean removal of guide submodule or clone
 
 ### v0.5.0
 
@@ -227,6 +266,7 @@ pnpm --filter @context-forge/cli typecheck # Type check
 - **Unified opening statement** — always "Working on {name}..." regardless of workType
 - **Phase auto-sets instruction** — `cf set phase N` also updates `instruction` to match
 - **Top-level shortcuts** — `cf set` and `cf get` work as shortcuts for `cf project set/get`
+- **Codebase Reference** — when the active prompt's profile lists `fileComprehension` or `fileDocsMap`, `cf build` adds a `### Codebase Reference` section after Project Context naming the registered comprehension doc and the docs map, with the docs map shown as `current` or `out of date` (see `docs/ADOPTION-PRIMITIVES.md`)
 
 ### v0.2.0
 

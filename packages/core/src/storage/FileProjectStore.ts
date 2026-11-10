@@ -6,52 +6,33 @@ import type {
   CreateProjectData,
   UpdateProjectData,
 } from '../types/project.js';
-import type { WorktreeContext } from '../types/worktree.js';
 import type { IProjectStore } from './interfaces.js';
 import { FileStorageService } from './FileStorageService.js';
 import { getStoragePath, getLegacyElectronPath } from './storagePaths.js';
+import { markLegacyDefaultWorktree } from '../utils/defaultWorktree.js';
 
 const PROJECTS_FILE = 'projects.json';
 
-function generateProjectId(): string {
-  return `project_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+/** Migration warnings already printed by this process; each prints once. */
+const printedMigrationWarnings = new Set<string>();
+
+/**
+ * Apply the pure default-worktree migration to one parsed project and print its
+ * warnings to stderr. stdout is never used: under the MCP stdio transport it
+ * carries the protocol stream.
+ */
+function migrateDefaultWorktreeMarker(project: ProjectData, projectsJsonPath: string): ProjectData {
+  const result = markLegacyDefaultWorktree(project, projectsJsonPath);
+  for (const warning of result.warnings) {
+    if (printedMigrationWarnings.has(warning)) continue;
+    printedMigrationWarnings.add(warning);
+    console.warn(warning);
+  }
+  return result.project;
 }
 
-/** Apply field-migration defaults for projects missing newer fields. */
-function migrateProjectFields(project: Record<string, unknown>): ProjectData {
-  const base = project as unknown as ProjectData;
-  const migrated = {
-    ...base,
-    // Renamed fields: prefer new name, fall back to old name
-    fileSlice: (project.fileSlice ?? project.slice ?? '') as string,
-    fileTasks: (project.fileTasks ?? project.taskFile ?? '') as string,
-    dateProject: (project.dateProject ?? project.projectDate) as string | undefined,
-    // New artifact fields: undefined when absent
-    fileHLD: project.fileHLD as string | undefined,
-    fileArch: project.fileArch as string | undefined,
-    fileSlicePlan: project.fileSlicePlan as string | undefined,
-    fileSpec: project.fileSpec as string | undefined,
-    instruction:
-      typeof project.instruction === 'string'
-        ? base.instruction
-        : 'implementation',
-    customData:
-      project.customData && typeof project.customData === 'object'
-        ? base.customData
-        : {},
-    // Worktree contexts: preserve if present
-    worktrees: project.worktrees as WorktreeContext[] | undefined,
-  };
-
-  // Strip legacy monorepo fields
-  const result = migrated as Record<string, unknown>;
-  delete result.isMonorepo;
-  delete result.isMonorepoEnabled;
-  if (migrated.customData) {
-    delete (migrated.customData as Record<string, unknown>).monorepoNote;
-  }
-
-  return migrated;
+function generateProjectId(): string {
+  return `project_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 }
 
 /**
@@ -89,9 +70,9 @@ export class FileProjectStore implements IProjectStore {
         return [];
       }
 
-      return parsed.map((p: Record<string, unknown>) =>
-        migrateProjectFields(p)
-      );
+      // In-memory only: the next create/update/delete saves the migrated values.
+      const projectsJsonPath = join(this.storagePath, PROJECTS_FILE);
+      return (parsed as ProjectData[]).map((p) => migrateDefaultWorktreeMarker(p, projectsJsonPath));
     } catch (err) {
       // File not found — empty store
       if (
@@ -200,7 +181,7 @@ export class FileProjectStore implements IProjectStore {
       );
     }
 
-    console.log(`Migrated projects.json from legacy location: ${legacyPath}`);
+    console.warn(`Migrated projects.json from legacy location: ${legacyPath}`);
     return true;
   }
 }

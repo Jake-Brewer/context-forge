@@ -21,6 +21,7 @@ const mockMergeProjectModels = vi.fn();
 vi.mock('@context-forge/core/node', () => ({
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getById: mockGetById,
+    getAll: vi.fn().mockResolvedValue([]),
   })),
   ConfigManager: vi.fn().mockImplementation(() => ({
     get: mockConfigGet,
@@ -189,7 +190,7 @@ describe('introspection_tasks', () => {
       items: [],
       totalTasks: 0,
       completedTasks: 0,
-      inferredStatus: 'not-started',
+      inferredStatus: 'not_started',
     });
 
     const result = await client.callTool({

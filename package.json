@@ -5,24 +5,22 @@
   "description": "Context Forge - AI project context generation tool (monorepo root)",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @context-forge/electron dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck",
-    "setup-guides": "curl -fsSL https://raw.githubusercontent.com/ecorkran/ai-project-guide/main/scripts/bootstrap.sh | bash",
-    "update-guides": "bash project-documents/ai-project-guide/scripts/template-stubs/update-guides.sh"
+    "lint": "eslint .",
+    "typecheck": "pnpm -r typecheck"
   },
   "keywords": [
-    "electron",
-    "react",
     "typescript",
-    "tailwind",
-    "vite",
     "context-forge",
     "monorepo"
   ],
-  "author": "Manta Templates",
+  "author": "Erik Corkran",
   "license": "MIT",
-  "packageManager": "pnpm@10.14.0"
+  "packageManager": "pnpm@10.14.0",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "typescript-eslint": "^8.71.1"
+  }
 }

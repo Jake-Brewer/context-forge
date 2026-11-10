@@ -4,25 +4,15 @@ import { SystemPromptParser } from './SystemPromptParser.js';
 import { StatementManager } from './StatementManager.js';
 import { ContextTemplateEngine } from './ContextTemplateEngine.js';
 import { ContextIntegrator } from './ContextIntegrator.js';
-import { PROMPT_FILE_RELATIVE_PATH, STATEMENTS_FILE_RELATIVE_PATH } from './constants.js';
+import { STATEMENTS_FILE_RELATIVE_PATH } from './constants.js';
+import { resolveTaskFilesForPrompt } from './taskFilesResolver.js';
+import { resolveIntegrationBranchForPrompt } from './integrationBranchResolver.js';
+import { resolvePermissivenessForPrompt } from './permissivenessResolver.js';
+import { resolveCodebaseReferenceForPrompt } from './codebaseReferenceResolver.js';
+import { resolvePromptFilePath } from './promptFilePath.js';
 
-/**
- * Resolve the system prompt file path for a project.
- * Requires the project to have ai-project-guide installed.
- * Throws if no prompt file is found.
- *
- * @param projectPath Absolute path to the project root
- * @returns Absolute path to the prompt file
- */
-export function resolvePromptFilePath(projectPath: string): string {
-  const projectLocalPath = path.join(projectPath, PROMPT_FILE_RELATIVE_PATH);
-  if (fs.existsSync(projectLocalPath)) {
-    return projectLocalPath;
-  }
-  throw new Error(
-    `No prompt file found at ${projectLocalPath}. Run 'cf guide install' to set up the AI project guide.`
-  );
-}
+// Defined in its own module so resolvers can use it without importing this factory.
+export { resolvePromptFilePath };
 
 /**
  * Creates a fully wired context assembly pipeline for a given project path.
@@ -46,7 +36,15 @@ export function createContextPipeline(projectPath: string): {
 
   const engine = new ContextTemplateEngine(promptParser, statementManager);
   const readFileFn = (filePath: string): string => fs.readFileSync(filePath, 'utf-8');
-  const integrator = new ContextIntegrator(engine, true, readFileFn);
+  const integrator = new ContextIntegrator(
+    engine,
+    true,
+    readFileFn,
+    resolveTaskFilesForPrompt,
+    resolveIntegrationBranchForPrompt,
+    resolvePermissivenessForPrompt,
+    resolveCodebaseReferenceForPrompt,
+  );
 
   return { engine, integrator };
 }

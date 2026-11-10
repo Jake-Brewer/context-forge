@@ -1,4 +1,6 @@
 import * as os from 'node:os';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Command } from 'commander';
 import {
@@ -8,12 +10,21 @@ import {
   resolveFileByIndex,
 } from '@context-forge/core/node';
 import type { WorktreeInfo, WorktreePathStatus } from '@context-forge/core';
+import { RangeRestoreSkipReason, isDefaultWorktree } from '@context-forge/core';
 import { resolveProjectWorktree, findWorktreeByNameOrId } from '../utils/project.js';
+import { withProjectOption, withYesOption, withJsonOption } from '../options.js';
 import { handleError, UserError } from '../utils/errors.js';
 import { askConfirmation } from '../utils/confirm.js';
 import { printJson } from '../output/formatter.js';
 import { renderTable } from '../output/tables.js';
 import { success, dim, warn } from '../output/styles.js';
+
+/** Why `cf worktree rm` left the default worktree's range as it was, per skip reason. */
+const RANGE_NOT_RESTORED_TEXT: Record<RangeRestoreSkipReason, string> = {
+  [RangeRestoreSkipReason.RangeOverride]: 'it is pinned with a range override',
+  [RangeRestoreSkipReason.NotAdjacent]: "the removed range does not border it, so they can't merge into one range",
+  [RangeRestoreSkipReason.WouldOverlap]: 'the combined range would overlap another worktree',
+};
 
 /** Shorten an absolute path by replacing the home directory with ~. */
 function shortenPath(p: string): string {
@@ -43,15 +54,15 @@ export function registerWorktreeCommand(program: Command): void {
     .description('Manage worktree contexts for a project');
 
   // ── cf worktree init ────────────────────────────────────────────────────────
-  worktree
+  const initCmd = worktree
     .command('init')
     .description('Register a new worktree context for the active project')
     .requiredOption('--name <name>', 'Name for this worktree context')
     .requiredOption('--range <start-end>', 'Slice index range, e.g. 100-199')
     .option('--path <path>', 'Absolute path to the git worktree directory (default: CWD)')
-    .option('-o, --override', 'Allow overlapping index ranges (skip range chopping)')
-    .option('--project <name|id>', 'Project name or ID (overrides default)')
-    .action(async (opts: { name: string; range: string; path?: string; override?: boolean; project?: string }) => {
+    .option('-o, --override', 'Allow overlapping index ranges (skip range chopping)');
+  withProjectOption(initCmd);
+  initCmd.action(async (opts: { name: string; range: string; path?: string; override?: boolean; project?: string }) => {
       try {
         const indexRange = parseRange(opts.range);
         const store = new FileProjectStore();
@@ -163,12 +174,10 @@ export function registerWorktreeCommand(program: Command): void {
     });
 
   // ── cf worktree list ────────────────────────────────────────────────────────
-  worktree
-    .command('list')
-    .description('List worktree contexts for the active project')
-    .option('--project <name|id>', 'Project name or ID (overrides default)')
-    .option('--json', 'Output as JSON')
-    .action(async (opts: { project?: string; json?: boolean }) => {
+  const listCmd = worktree.command('list').description('List worktree contexts for the active project');
+  withProjectOption(listCmd);
+  withJsonOption(listCmd);
+  listCmd.action(async (opts: { project?: string; json?: boolean }) => {
       try {
         const store = new FileProjectStore();
         const resolved = await resolveProjectWorktree({ project: opts.project }, store);
@@ -228,12 +237,13 @@ export function registerWorktreeCommand(program: Command): void {
 
           const archStr = wt.archDoc ?? dim('—');
           const planStr = wt.slicePlan ?? dim('—');
+          const nameStr = isDefaultWorktree(wt) ? `${wt.name} ${dim('(default)')}` : wt.name;
 
           if (isActive) {
-            rows.push([success(wt.name), success(rangeStr), success(pathStr), success(archStr), success(planStr)]);
+            rows.push([success(nameStr), success(rangeStr), success(pathStr), success(archStr), success(planStr)]);
             prefixes.push(success('* '));
           } else {
-            rows.push([wt.name, rangeStr, pathStr, archStr, planStr]);
+            rows.push([nameStr, rangeStr, pathStr, archStr, planStr]);
             prefixes.push('  ');
           }
         }
@@ -245,15 +255,15 @@ export function registerWorktreeCommand(program: Command): void {
     });
 
   // ── cf worktree update ─────────────────────────────────────────────────────
-  worktree
+  const updateCmd = worktree
     .command('update [nameOrId]')
     .description('Update a worktree context (rename, change range or path)')
     .option('--name <name>', 'New display name')
     .option('--range <start-end>', 'New slice index range, e.g. 150-249')
     .option('--path <path>', 'New worktree directory path')
-    .option('-o, --override', 'Allow overlapping index ranges (skip range chopping)')
-    .option('--project <name|id>', 'Project name or ID (overrides default)')
-    .action(
+    .option('-o, --override', 'Allow overlapping index ranges (skip range chopping)');
+  withProjectOption(updateCmd);
+  updateCmd.action(
       async (
         nameOrId: string | undefined,
         opts: { name?: string; range?: string; path?: string; override?: boolean; project?: string },
@@ -367,12 +377,10 @@ export function registerWorktreeCommand(program: Command): void {
     );
 
   // ── cf worktree rm ──────────────────────────────────────────────────────────
-  worktree
-    .command('rm [nameOrId]')
-    .description('Remove a worktree context from the active project')
-    .option('--project <name|id>', 'Project name or ID (overrides default)')
-    .option('--yes', 'Skip confirmation prompt')
-    .action(async (nameOrId: string | undefined, opts: { project?: string; yes?: boolean }) => {
+  const rmCmd = worktree.command('rm [nameOrId]').description('Remove a worktree context from the active project');
+  withProjectOption(rmCmd);
+  withYesOption(rmCmd);
+  rmCmd.action(async (nameOrId: string | undefined, opts: { project?: string; yes?: boolean }) => {
       try {
         const store = new FileProjectStore();
         const resolved = await resolveProjectWorktree({ project: opts.project }, store);
@@ -428,7 +436,7 @@ export function registerWorktreeCommand(program: Command): void {
         }
 
         const svc = new WorktreeService(store);
-        const { migrated } = await svc.removeWorktree(projectId, targetId);
+        const { migrated, restoredRange, rangeNotRestored, defaultWorktree } = await svc.removeWorktree(projectId, targetId);
 
         if (migrated) {
           console.log(
@@ -437,6 +445,40 @@ export function registerWorktreeCommand(program: Command): void {
         }
 
         console.log(success(`Worktree context '${target.name}' removed from project '${project.name}'.`));
+        if (restoredRange || rangeNotRestored) {
+          // The service sets defaultWorktree whenever it reports either outcome.
+          if (!defaultWorktree) {
+            throw new Error('removeWorktree reported a range outcome without the default worktree');
+          }
+          if (restoredRange) {
+            console.log(dim(
+              `Note: Its range went back to the default worktree '${defaultWorktree.name}', now ${restoredRange[0]}-${restoredRange[1]}.`,
+            ));
+          } else if (rangeNotRestored) {
+            const [start, end] = rangeNotRestored.defaultRange;
+            console.log(warn(
+              `Note: The default worktree '${defaultWorktree.name}' keeps its range ${start}-${end}: ${RANGE_NOT_RESTORED_TEXT[rangeNotRestored.reason]}.\n` +
+                `  To widen it by hand: cf worktree update ${defaultWorktree.name} --range <start>-<end>`,
+            ));
+          }
+        }
+
+        // Hint about git worktree removal when the worktree has a filesystem path
+        if (target.worktreePath) {
+          const guidesPresent = existsSync(join(target.worktreePath, 'project-documents', 'ai-project-guide'));
+          if (guidesPresent) {
+            console.log(dim(
+              `\n  To remove the git worktree, first uninstall guides:\n` +
+              `    cd ${target.worktreePath} && cf guides uninstall\n` +
+              `    git worktree remove --force ${target.worktreePath}`,
+            ));
+          } else {
+            console.log(dim(
+              `\n  To remove the git worktree:\n` +
+              `    git worktree remove --force ${target.worktreePath}`,
+            ));
+          }
+        }
       } catch (err) {
         handleError(err);
       }

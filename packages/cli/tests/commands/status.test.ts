@@ -8,6 +8,8 @@ const mockGetStatus = vi.fn();
 const mockListGitWorktrees = vi.fn().mockResolvedValue([]);
 
 vi.mock('@context-forge/core/node', () => ({
+  upstreamLag: vi.fn().mockResolvedValue(null),
+  formatUpstreamLagWarning: vi.fn(),
   FileProjectStore: vi.fn().mockImplementation(() => ({
     getAll: mockGetAll,
     getById: mockGetById,
@@ -45,7 +47,7 @@ const sampleStatus = {
     name: 'auth',
     index: 100,
     status: 'in-implementation',
-    taskProgress: { completed: 3, total: 5, inferredStatus: 'in-progress' },
+    taskProgress: { completed: 3, total: 5, inferredStatus: 'in_progress' },
   },
   slicePlan: { name: '100-slices.test.md', completed: 7, total: 10, entries: [] },
   summary: 'test-project — Phase 6 — slice 100 in-implementation (3/5 tasks)',
@@ -83,6 +85,39 @@ describe('cf status', () => {
     expect(output).toContain('100-slices.test');
     expect(output).toContain('100-slice.auth');
     expect(output).toContain('3/5 tasks');
+  });
+
+  describe('pending-decision slice', () => {
+    const pendingStatus = {
+      ...sampleStatus,
+      activeSlice: {
+        name: 'auth',
+        index: 100,
+        status: 'pending-decision',
+        pendingDecisions: [{ heading: 'D1 — First', line: 12 }],
+      },
+    };
+
+    it('shows the pending-decision status', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetStatus.mockResolvedValue(pendingStatus);
+
+      await createProgram().parseAsync(['node', 'cf', 'status', '--project', 'proj_001']);
+
+      const output = vi.mocked(console.log).mock.calls.map((c) => c[0]).join('\n');
+      expect(output).toContain('pending-decision');
+    });
+
+    it('--json carries the status and the decisions', async () => {
+      mockGetById.mockResolvedValue(sampleProject);
+      mockGetStatus.mockResolvedValue(pendingStatus);
+
+      await createProgram().parseAsync(['node', 'cf', 'status', '--project', 'proj_001', '--json']);
+
+      const parsed = JSON.parse(vi.mocked(process.stdout.write).mock.calls[0]?.[0] as string);
+      expect(parsed.activeSlice.status).toBe('pending-decision');
+      expect(parsed.activeSlice.pendingDecisions).toEqual([{ heading: 'D1 — First', line: 12 }]);
+    });
   });
 
   it('outputs valid JSON with --json flag', async () => {
@@ -130,6 +165,107 @@ describe('cf status', () => {
     const raw = vi.mocked(process.stdout.write).mock.calls[0]?.[0] as string;
     const parsed = JSON.parse(raw);
     expect(parsed.resolutionSource).toBe('flag');
+  });
+
+  it('--project X --worktree <name> selects <name> even when CWD is in a different worktree of X', async () => {
+    const projectWithWorktrees = {
+      ...sampleProject,
+      worktrees: [
+        { id: 'wt_001', name: 'feature-a', worktreePath: '/tmp/test-feature-a' },
+        { id: 'wt_002', name: 'feature-b', worktreePath: '/tmp/test-feature-b' },
+      ],
+    };
+    mockGetAll.mockResolvedValue([projectWithWorktrees]);
+    mockGetById.mockResolvedValue(projectWithWorktrees);
+    mockGetStatus.mockResolvedValue(sampleStatus);
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-feature-a');
+
+    const program = createProgram();
+    await program.parseAsync([
+      'node', 'cf', 'status', '--project', 'proj_001', '--worktree', 'feature-b', '--json',
+    ]);
+
+    const raw = vi.mocked(process.stdout.write).mock.calls[0]?.[0] as string;
+    const parsed = JSON.parse(raw);
+    expect(parsed.worktree.name).toBe('feature-b');
+    cwdSpy.mockRestore();
+  });
+
+  it('--worktree <bogus> throws UserError', async () => {
+    const projectWithWorktrees = {
+      ...sampleProject,
+      worktrees: [{ id: 'wt_001', name: 'feature-a', worktreePath: '/tmp/test-feature-a' }],
+    };
+    mockGetAll.mockResolvedValue([projectWithWorktrees]);
+    mockGetById.mockResolvedValue(projectWithWorktrees);
+    mockGetStatus.mockResolvedValue(sampleStatus);
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'status', '--project', 'proj_001', '--worktree', 'nope']);
+
+    const errOutput = vi.mocked(console.error).mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errOutput).toContain("Worktree 'nope' not found");
+  });
+
+  it('#101 criterion 8: migrated single-worktree project with CWD at project root reports worktree.name "default" and resolutionSource "flag"', async () => {
+    const migratedProject = {
+      ...sampleProject,
+      worktrees: [{ id: 'default', name: 'default', worktreePath: '/tmp/test' }],
+    };
+    mockGetAll.mockResolvedValue([migratedProject]);
+    mockGetById.mockResolvedValue(migratedProject);
+    mockGetStatus.mockResolvedValue(sampleStatus);
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test');
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'status', '--project', 'proj_001', '--json']);
+
+    const raw = vi.mocked(process.stdout.write).mock.calls[0]?.[0] as string;
+    const parsed = JSON.parse(raw);
+    expect(parsed.worktree.name).toBe('default');
+    expect(parsed.resolutionSource).toBe('flag');
+    cwdSpy.mockRestore();
+  });
+
+  it('#62: renders TD-2a resolution-failure warnings distinctly and still prints the rest of the status', async () => {
+    mockGetById.mockResolvedValue(sampleProject);
+    mockGetStatus.mockResolvedValue({
+      ...sampleStatus,
+      warnings: ['Slice 127: slice-design frontmatter status "design" is not a recognized status'],
+    });
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'status', '--project', 'proj_001']);
+
+    const output = vi.mocked(console.log).mock.calls.map((c) => c[0]).join('\n');
+    // The command must not throw and must still print the normal status fields.
+    expect(output).toContain('test-project');
+    expect(output).toContain('3/5 tasks');
+    // Warnings are visually distinct (⚠-prefixed) from the status fields above them.
+    expect(output).toContain('Warnings:');
+    expect(output).toContain('⚠ Slice 127');
+  });
+
+  it('an unrelated UserError (unknown --worktree) is not masked by the first-run git-worktree suggestion', async () => {
+    // Reproduces a bug found during slice 927's verification walkthrough: the
+    // project resolves successfully (git worktree discovery's first entry is
+    // always the current checkout itself, which matches sampleProject's own
+    // projectPath), but a LATER UserError — an unknown --worktree name — was
+    // being caught by the same handler as resolution failure and swallowed
+    // into a bogus "looks like a git worktree" suggestion with exit 0.
+    mockGetById.mockResolvedValue(sampleProject);
+    mockListGitWorktrees.mockResolvedValue([
+      { path: '/tmp/test', head: 'abc', branch: 'refs/heads/main', bare: false },
+    ]);
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'status', '--project', 'proj_001', '--worktree', 'nope']);
+
+    const errOutput = vi.mocked(console.error).mock.calls.map((c) => String(c[0])).join('\n');
+    const output = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errOutput).toContain("Worktree 'nope' not found");
+    expect(output).not.toContain('appears to be a git worktree');
+    expect(process.exit).toHaveBeenCalledWith(1);
   });
 });
 

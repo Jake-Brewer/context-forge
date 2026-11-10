@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { buildModel, scanDirectory, mergeProjectModels } from '../../src/introspection/ProjectModelBuilder.js';
 import type { ProjectModel, Initiative } from '../../src/introspection/types.js';
 
@@ -11,8 +13,15 @@ describe('scanDirectory', () => {
     const docs = await scanDirectory(USER_DIR);
     // Fixture has: 100-arch, 100-slices, 100-slice, 100-tasks, 100-tasks-1,
     //              050-arch.hld, 002-spec, 900-tasks.maintenance, 780-slices.future.test-future,
-    //              200-slice.design-only, 300-slice.all-done, 300-tasks.all-done
-    expect(docs.length).toBe(12);
+    //              200-slice.design-only, 300-slice.all-done, 300-tasks.all-done,
+    //              100-review.code.first-pass, 100-review.code.second-pass, 100-review.arch.only-pass
+    //              (15 above, from slice 240) plus slice 241's verdict-bearing gate fixtures:
+    //              400-slice/tasks/review.gate-code-fail, 401-slice/tasks/review.gate-code-clears,
+    //              402-slice/tasks/review.gate-code-unknown, 403-slice/review.gate-slice-fail,
+    //              404-arch/review.gate-arch-concerns (13 more) plus slice 911's docs-only
+    //              gate fixture: 405-slice/tasks.gate-docs-only (2 more) plus slice 917's
+    //              nested-collision gate fixture: 406-slice/tasks/review.gate-code-nested-collision (3 more)
+    expect(docs.length).toBe(33);
   });
 
   it('each DocEntry has expected fields', async () => {
@@ -43,7 +52,34 @@ describe('scanDirectory', () => {
     const docs = await scanDirectory('/tmp/nonexistent-dir-12345');
     expect(docs).toEqual([]);
   });
+
+  it('doc with unrecognized frontmatter status gets status "unknown", scan completes', async () => {
+    const root = mktempProject();
+    const userDir = join(root, 'project-documents', 'user');
+    const slicesDir = join(userDir, 'slices');
+    mkdirSync(slicesDir, { recursive: true });
+    writeFileSync(
+      join(slicesDir, '500-slice.garbage-status.md'),
+      '---\nslice: garbage-status\nstatus: not-a-real-status\n---\n\n# Slice 500\n',
+    );
+    writeFileSync(
+      join(slicesDir, '501-slice.normal.md'),
+      '---\nslice: normal\nstatus: complete\n---\n\n# Slice 501\n',
+    );
+
+    const docs = await scanDirectory(userDir);
+    const garbage = docs.find((d) => d.index === 500);
+    const normal = docs.find((d) => d.index === 501);
+    expect(garbage).toBeDefined();
+    expect(garbage!.status).toBe('unknown');
+    expect(normal).toBeDefined();
+    expect(normal!.status).toBe('complete');
+  });
 });
+
+function mktempProject(): string {
+  return mkdtempSync(join(tmpdir(), 'cf-project-model-builder-'));
+}
 
 describe('buildModel', () => {
   it('foundation band: spec doc (002) appears in foundation[]', async () => {
@@ -83,11 +119,43 @@ describe('buildModel', () => {
     expect(planned).toBeDefined();
     expect(planned!.planned).toBe(true);
     expect(planned!.name).toBe('Planned Feature');
-    expect(planned!.status).toBe('not-started');
+    expect(planned!.status).toBe('not_started');
     // The actual designed slice (100) should still be present and NOT marked planned
     const actual = init.slices.find((s) => s.index === '100');
     expect(actual).toBeDefined();
     expect(actual!.planned).toBeUndefined();
+  });
+
+  it('plan-only initiative: plan entry without arch/slices doc appears as planned: true', async () => {
+    const model = await buildModel(PROJECT_ROOT);
+    const init = model.initiatives['400'];
+    expect(init).toBeDefined();
+    expect(init.planned).toBe(true);
+    expect(init.name).toBe('Plan Only Initiative');
+    expect(init.status).toBe('not_started');
+    expect(init.description).toContain('Exists only in the plan');
+    expect(init.slices).toEqual([]);
+    expect(init.arch).toBeUndefined();
+    expect(init.slicePlan).toBeUndefined();
+  });
+
+  it('plan-only initiative: arch/slices-backed initiative (100) is not marked planned', async () => {
+    const model = await buildModel(PROJECT_ROOT);
+    const init = model.initiatives['100'];
+    expect(init.planned).toBeUndefined();
+    // The plan entry must not overwrite the richer arch/slicePlan-backed model.
+    expect(init.arch).toBeDefined();
+    expect(init.slicePlan).toBeDefined();
+  });
+
+  it('plan-only initiative: 900+ plan entry flows into maintenanceInitiatives', async () => {
+    const model = await buildModel(PROJECT_ROOT);
+    const maint = model.maintenanceInitiatives['900'];
+    expect(maint).toBeDefined();
+    expect(maint.planned).toBe(true);
+    expect(maint.name).toBe('Maintenance');
+    // Plan-only initiatives never land in the regular initiatives map.
+    expect(model.initiatives['900']).toBeUndefined();
   });
 
   it('task merging: split task files merge into single task entry', async () => {
@@ -100,6 +168,9 @@ describe('buildModel', () => {
     expect(slice!.tasks!.taskCount).toBe(4);
     expect(slice!.tasks!.completedTasks).toBe(2); // Task one + Split task A
     expect(slice!.tasks!.items).toHaveLength(4);
+    // deriveEntryStatus: task signal (2/4 done → in-progress) matches the
+    // fixture's own frontmatter (status: in-progress) — no drift either way.
+    expect(slice!.tasks!.status).toBe('in_progress');
   });
 
   it('operational band: maintenance task (900) appears in maintenance[]', async () => {
@@ -151,6 +222,7 @@ function makeModel(overrides: Partial<ProjectModel> = {}): ProjectModel {
     foundation: [],
     projectArchitecture: [],
     initiatives: {},
+    maintenanceInitiatives: {},
     futureSlices: [],
     quality: [],
     investigation: [],
@@ -163,6 +235,67 @@ function makeModel(overrides: Partial<ProjectModel> = {}): ProjectModel {
 function makeInitiative(name: string): Initiative {
   return { name, slices: [], features: [] };
 }
+
+describe('deriveEntryStatus parity (slice 911)', () => {
+  function writeSlicesDoc(root: string, base: number, name: string, body: string): void {
+    mkdirSync(join(root, 'project-documents', 'user', 'architecture'), { recursive: true });
+    writeFileSync(
+      join(root, 'project-documents', 'user', 'architecture', `${base}-slices.${name}.md`),
+      `---\ndocType: slices\nproject: parity-test\n---\n\n# Slice Plan\n\n${body}\n`,
+    );
+  }
+
+  function writeSliceDoc(root: string, index: number, name: string, status: string): void {
+    mkdirSync(join(root, 'project-documents', 'user', 'slices'), { recursive: true });
+    writeFileSync(
+      join(root, 'project-documents', 'user', 'slices', `${index}-slice.${name}.md`),
+      `---\nslice: ${name}\nstatus: ${status}\n---\n\n# Slice ${index}\n`,
+    );
+  }
+
+  function writeTasksDoc(root: string, index: number, name: string, checkboxes: string[]): void {
+    mkdirSync(join(root, 'project-documents', 'user', 'tasks'), { recursive: true });
+    const body = checkboxes.map((c) => `- [${c}] Task`).join('\n');
+    writeFileSync(
+      join(root, 'project-documents', 'user', 'tasks', `${index}-tasks.${name}.md`),
+      `---\ntasks: ${name}\nstatus: not_started\n---\n\n${body}\n`,
+    );
+  }
+
+  it('task-entry path: task signal (in-progress) outranks frontmatter (not_started) — no drift vs deriveEntryStatus', async () => {
+    const root = mktempProject();
+    writeSlicesDoc(root, 800, 'parity', '1. [ ] **(801) Drifted** — frontmatter lags tasks.');
+    writeSliceDoc(root, 801, 'drifted', 'not_started');
+    writeTasksDoc(root, 801, 'drifted', ['x', ' ']);
+
+    const model = await buildModel(root);
+    const init = model.initiatives['800'];
+    const slice = init.slices.find((s) => s.index === '801');
+
+    expect(slice!.tasks!.status).toBe('in_progress');
+  });
+
+  it('plan-only path (no slice doc written): degrades to checkbox exactly as deriveEntryStatus with no signals', async () => {
+    const root = mktempProject();
+    writeSlicesDoc(
+      root,
+      800,
+      'parity',
+      '1. [x] **(802) Checked No Doc** — checkbox ticked, nothing on disk.\n' +
+        '2. [ ] **(803) Unchecked No Doc** — nothing on disk at all.',
+    );
+
+    const model = await buildModel(root);
+    const init = model.initiatives['800'];
+    const checked = init.slices.find((s) => s.index === '802');
+    const unchecked = init.slices.find((s) => s.index === '803');
+
+    expect(checked!.planned).toBe(true);
+    expect(checked!.status).toBe('complete');
+    expect(unchecked!.planned).toBe(true);
+    expect(unchecked!.status).toBe('not_started');
+  });
+});
 
 describe('mergeProjectModels', () => {
   it('throws on empty array', () => {

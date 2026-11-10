@@ -1,6 +1,6 @@
 {
   "name": "@context-forge/core",
-  "version": "0.6.23",
+  "version": "0.19.26",
   "description": "Core context generation engine for Context Forge — template processing, project state, prompt assembly",
   "type": "module",
   "main": "dist/index.js",
@@ -13,6 +13,10 @@
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./schema/*": {
+      "types": "./dist/schema/*.d.ts",
+      "default": "./dist/schema/*.js"
     }
   },
   "files": [
@@ -33,7 +37,7 @@
     "template",
     "prompt"
   ],
-  "author": "Manta Templates",
+  "author": "Erik Corkran",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -42,7 +46,7 @@
   },
   "homepage": "https://github.com/ecorkran/context-forge/tree/main/packages/core#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.18.1"
   },
   "devDependencies": {
     "@types/node": "^24.3.1",
@@ -53,6 +57,7 @@
   "dependencies": {
     "env-paths": "^4.0.0",
     "smol-toml": "^1.6.0",
-    "tar": "^7.5.10"
+    "tar": "^7.5.10",
+    "undici": "^7.29.1"
   }
 }

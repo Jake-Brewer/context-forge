@@ -6,6 +6,7 @@ export { StatementManager } from './services/StatementManager.js';
 export { SystemPromptParser } from './services/SystemPromptParser.js';
 export { ProjectPathService } from './services/ProjectPathService.js';
 export { createContextPipeline, resolvePromptFilePath } from './services/CoreServiceFactory.js';
+export { PERMISSIVENESS_FRAGMENT_DIR } from './services/permissivenessResolver.js';
 
 // Storage — filesystem-backed project CRUD, backup, and storage utilities
 export * from './storage/index.js';
@@ -17,12 +18,33 @@ export * from './config/index.js';
 export * from './guides/index.js';
 
 // Schema — fs-dependent helpers (index-based file resolution)
-export { resolveFileByIndex, resolveArtifactPath, deriveArtifactStem } from './schema/resolveFileByIndex.js';
+export { resolveFileByIndex, resolveArtifactPath, deriveArtifactStem, resolveSlicePlanPathByIndex } from './schema/resolveFileByIndex.js';
+export { normalizeArtifactValue } from './schema/normalizeArtifactValue.js';
+export {
+  validateFrontmatterFiles,
+  discoverAllDocuments,
+  DOC_SCAN_DIRS,
+  PathOutcome,
+  type PathResult,
+  type FrontmatterFileValidationResult,
+} from './schema/frontmatterFileValidator.js';
+export {
+  validateSliceDesignFiles,
+  SliceDesignValidationError,
+  DesignFailureReason,
+  SLICE_DESIGN_DOC_TYPE,
+  DOC_TYPE_FAILURE_MESSAGE,
+  type DesignValidationResult,
+} from './schema/sliceDesignFiles.js';
+
+export { findPendingDecisions, type PendingDecision } from './schema/pendingDecisions.js';
+export { isDecisionGateEnabled, readPendingDecisions } from './schema/decisionGate.js';
 
 // Introspection — artifact parsing and document detection (fs dependent)
-export { ArtifactIntrospector } from './introspection/ArtifactIntrospector.js';
+export { ArtifactIntrospector, resolveInitiativePlanPath } from './introspection/ArtifactIntrospector.js';
 export { WorkflowNavigator, extractSliceIndex } from './introspection/WorkflowNavigator.js';
-export { parseFrontmatter } from './introspection/parsers/frontmatterParser.js';
+export { evaluateSetupCiOffer, type OfferEvaluation } from './introspection/setupCiOffer.js';
+export { parseFrontmatter, parseFrontmatterText } from './introspection/parsers/frontmatterParser.js';
 export { parseSlicePlan } from './introspection/parsers/slicePlanParser.js';
 export { parseTaskItems, parseTaskFile } from './introspection/parsers/taskFileParser.js';
 export { parseFutureWork } from './introspection/parsers/futureWorkParser.js';
@@ -32,11 +54,53 @@ export { FutureWorkCollector } from './introspection/FutureWorkCollector.js';
 export { ConsistencyChecker } from './introspection/ConsistencyChecker.js';
 export { updateCheckbox, updateFrontmatterField } from './introspection/writers/markdownWriter.js';
 
+// Detection — project-folder facts (CI, build manifests); fs dependent
+export * from './detection/index.js';
+
+// Adoption — brownfield adoption state read, outcome and AdoptionError; fs dependent
+export * from './adoption/index.js';
+
+// Rule reconciliation — rule resolutions, project rule sources, managed markers; fs dependent
+export * from './ruleReconciliation/index.js';
+
+// Docs map — index of existing docs and ADRs in project-documents; fs dependent
+export * from './docs-map/index.js';
+export * from './devlog/index.js';
+
 // Project defaults — fs-dependent auto-set rules (uses resolveFileByIndex)
 export { computeAutoSetFields } from './project-autoset.js';
 
 // Git utilities — spawns git subprocess (fs/process dependent)
-export { GitWorktreeDiscovery } from './git/index.js';
+export {
+  GitWorktreeDiscovery,
+  checkoutReadiness,
+  FIX_GIT_TIMEOUT_MS,
+  upstreamLag,
+  formatUpstreamLagWarning,
+  type ReadinessResult,
+  type UpstreamLag,
+} from './git/index.js';
 
 // Worktree management — uses IProjectStore (Node.js-backed)
 export { WorktreeService } from './services/WorktreeService.js';
+
+// Context embedding — inlines referenced artifact files for non-SDK models
+export { embedReferencedFiles } from './services/ContextEmbedder.js';
+
+// Worktree-aware fix routing (slice 213) — runs git against other checkouts
+export {
+  planRoutedFixes,
+  applyFixPlan,
+  resolveInvokingCheckout,
+  FIX_COMMIT_MESSAGE,
+  type ApplyFixOptions,
+  type AttributedCheckResult,
+  type FixPlan,
+  type FixPlanEntry,
+} from './introspection/routedFixes.js';
+export {
+  scopeCheck,
+  resolveFixInvokingPath,
+  planFixRun,
+  type CheckScope,
+} from './introspection/checkRun.js';

@@ -15,6 +15,22 @@ import { parseFrontmatter } from './parsers/frontmatterParser.js';
 import { parseFutureWork } from './parsers/futureWorkParser.js';
 import { detectDocuments, checkFileExists } from './parsers/documentDetector.js';
 import { resolveArtifactPath } from '../schema/resolveFileByIndex.js';
+import { findProjectGuideFile, resolveConceptPath } from './parsers/projectGuideFile.js';
+
+// Moved to parsers/ so adoption/ can read the concept without crossing the D8 layer boundary.
+export { resolveConceptPath };
+
+/** Filename of an initiative plan: 001-initiative-plan.*.md (case-insensitive). */
+export const INITIATIVE_PLAN_FILE_PATTERN = /^001-initiative-plan\..*\.md$/i;
+
+/**
+ * Locate the initiative plan file for a project.
+ * Convention: project-documents/user/project-guides/001-initiative-plan.*.md
+ * Returns the full path, or null if not found.
+ */
+export function resolveInitiativePlanPath(projectPath: string): Promise<string | null> {
+  return findProjectGuideFile(projectPath, INITIATIVE_PLAN_FILE_PATTERN);
+}
 
 /**
  * Orchestrator that delegates to individual parser functions.

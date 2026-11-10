@@ -1,6 +1,8 @@
 import { readdirSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PROJECT_FIELDS } from './projectSchema.js';
+import { normalizeArtifactValue } from './normalizeArtifactValue.js';
 
 /** Maps artifact field names to their directory and file prefix pattern. */
 const ARTIFACT_DIR_MAP: Record<string, { dir: string; prefixes: string[] }> = {
@@ -44,10 +46,19 @@ export function resolveFileByIndex(
     );
   }
 
-  // Match files like {index}-{prefix}*.md
+  // Match files like {index}-{prefix}*.md. Tolerates leading zeros on the
+  // index in the filename (e.g. an index of '3' matches both
+  // '3-slices.foo.md' and '003-slices.foo.md'), matching documentDetector.ts's
+  // matchFiles() and resolveSlicePlanPathByIndex()'s convention (#91) — an
+  // exact-prefix match previously missed zero-padded filenames, leading a
+  // caller to derive and store a non-padded stem that then failed to
+  // resolve back to the real file.
+  const prefixPatterns = mapping.prefixes.map(
+    (prefix) => new RegExp(`^0*${index}-${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+  );
   const matches = files.filter((f) => {
     if (!f.endsWith('.md')) return false;
-    return mapping.prefixes.some((prefix) => f.startsWith(`${index}-${prefix}`));
+    return prefixPatterns.some((pattern) => pattern.test(f));
   });
 
   if (matches.length === 0) {
@@ -102,5 +113,39 @@ export function deriveArtifactStem(field: string, index: string, name: string): 
 export function resolveArtifactPath(field: string, stem: string): string | null {
   const mapping = ARTIFACT_DIR_MAP[field];
   if (!mapping) return null;
-  return join(mapping.dir, `${stem}.md`);
+  const normalized = normalizeArtifactValue(stem);
+  return join(mapping.dir, `${normalized}.md`);
+}
+
+/**
+ * Resolve a bare architecture index to the full path of its slice plan file,
+ * independent of the project's currently-configured plan. Scans
+ * project-documents/user/architecture/ for a file matching
+ * `{archIndex}-slices.*.md` — the same pattern ConsistencyChecker's
+ * discoverAllSlicePlans() uses, narrowed to one index. Tolerates leading
+ * zeros on the index (e.g. archIndex 70 matches `070-slices.*.md`), matching
+ * documentDetector.ts's matchFiles() convention.
+ *
+ * @returns The matching file's full path, or null if none exists.
+ */
+export async function resolveSlicePlanPathByIndex(
+  projectPath: string,
+  archIndex: number,
+): Promise<string | null> {
+  const archDir = join(projectPath, 'project-documents/user/architecture');
+  let files: string[];
+  try {
+    files = await readdir(archDir);
+  } catch {
+    return null;
+  }
+
+  const pattern = new RegExp(`^0*${archIndex}-slices\\..*\\.md$`, 'i');
+  const matches = files.filter((f) => pattern.test(f)).sort();
+
+  if (matches.length === 0) return null;
+
+  // Deterministic tie-break for a malformed project with multiple candidates:
+  // first alphabetically after sort(), same convention as discoverAllSlicePlans().
+  return join(archDir, matches[0]);
 }

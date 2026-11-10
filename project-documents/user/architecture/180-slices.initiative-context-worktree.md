@@ -392,6 +392,15 @@ Integration (after all features):     │
   - Developer creates overlapping ranges (100-199 and 150-249): warning displayed but worktree context created.
   - Developer runs `cf set slice 103` from project root (no worktree context): updates project-level `fileSlice` as today (backwards compatible).
 
+## Bug Fix
+
+14. [x] **(194) Worktree-Scoped Guide Uninstall** — `GuideManager.uninstall()` always runs `submodule deinit`, `git rm`, and commit against `projectPath`, making it impossible to uninstall guides from a worktree without breaking the main repo. Fix: when `operationPath` differs from `projectPath`, perform only a worktree-scoped `submodule deinit` (no `.git/modules` removal, no `git rm`, no commit). This allows `git worktree remove` to succeed on worktrees that contain the ai-project-guide submodule. Ref: GitHub issue #46.
+
+   **Value:** Unblocks worktree removal — currently requires a 3-step manual workaround.
+   **Dependencies:** None (operationPath plumbing exists from slice 190)
+   **Risk:** Low — small change surface, clear separation between full uninstall and worktree deinit
+   **Effort:** 1/5
+
 ## Future Work
 
 1. [ ] **Automatic Worktree Context Creation** — Optional `cf.auto_worktree` config that creates a worktree context automatically when `cf status` detects an unrecognized worktree, based on the checked-out branch name or directory naming convention. Currently deferred in favor of explicit `cf worktree init`.

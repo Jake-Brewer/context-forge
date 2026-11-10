@@ -7,6 +7,7 @@ projectState: Slices 140-150 complete. Monorepo restructure done. Core has 224 t
 dateCreated: 20260223
 dateUpdated: 20260223
 status: complete
+docType: tasks
 ---
 
 ## Context Summary
@@ -121,7 +122,7 @@ status: complete
     - `repository`: `{ "type": "git", "url": "https://github.com/ecorkran/context-forge.git", "directory": "packages/mcp-server" }`
     - `homepage`: link to mcp-server README on GitHub
     - `license`: `"MIT"`
-    - `author`: `"Manta Templates"`
+    - `author`: `"Erik Corkran"`
     - `engines`: `{ "node": ">=18.0.0" }`
     - `files`: `["dist", "README.md"]`
   - [x] `"private"` field removed or set to `false`
@@ -137,7 +138,7 @@ status: complete
     - `repository`: `{ "type": "git", "url": "https://github.com/ecorkran/context-forge.git", "directory": "packages/core" }`
     - `homepage`: link to core README on GitHub
     - `license`: `"MIT"`
-    - `author`: `"Manta Templates"`
+    - `author`: `"Erik Corkran"`
     - `engines`: `{ "node": ">=18.0.0" }`
     - `files`: `["dist", "README.md"]`
   - [x] `"private"` field removed or set to `false`

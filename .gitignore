@@ -11,6 +11,10 @@ node_modules
 dist
 dist-ssr
 *.local
+.context-forge.local.toml
+
+# Claude local settings
+.claude/local/
 
 # Package build output
 packages/*/dist/
@@ -28,6 +32,7 @@ out/*
 
 # Sensitive / internal-only files
 project-documents/user/slices/120-slice.plugins-1.md
+*-gitleaks-*.json
 
 # Editor directories and files
 .vscode/*

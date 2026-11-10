@@ -6,9 +6,11 @@ github:
 dependencies: []
 architecture: 050-arch.prompt-system-decoupling
 projectState: Electron+React app. Settings dialog exists with monorepo toggle. No filesystem awareness of project directories.
-status: not started
+status: not_started
 dateCreated: 20260213
 dateUpdated: 20260213
+docType: slice-design
+slice: project-path-awareness
 ---
 
 # Slice Design: Project Path Awareness

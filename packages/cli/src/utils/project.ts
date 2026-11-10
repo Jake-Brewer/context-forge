@@ -1,5 +1,5 @@
 import { FileProjectStore, GitWorktreeDiscovery } from '@context-forge/core/node';
-import type { ProjectData } from '@context-forge/core';
+import { resolveWorktreeForPath, type ProjectData, type WorktreeMatch } from '@context-forge/core';
 import { UserError } from './errors.js';
 
 /**
@@ -30,54 +30,32 @@ export interface CwdMatch {
 }
 
 /**
- * Find the project whose projectPath or worktreePath best matches the current
- * working directory. When multiple paths match (nested paths), the longest wins.
+ * Find the project whose projectPath or worktreePath best matches `directory`
+ * (default: the current working directory, read at the call). When multiple
+ * paths match (nested paths), the longest wins.
  * Projects without a projectPath are skipped; worktrees without a worktreePath
  * are also skipped.
  */
 export async function findProjectByCwd(
   store: FileProjectStore,
+  directory: string = process.cwd(),
 ): Promise<CwdMatch | null> {
   const projects = await store.getAll();
-  const cwd = process.cwd();
 
-  interface PathCandidate {
-    project: ProjectData;
-    path: string;
-    worktreeId?: string;
-  }
-
-  const candidates: PathCandidate[] = [];
+  // Each project resolves independently; the best match across all of them
+  // wins by the same longest-root rule resolveWorktreeForPath applies within one.
+  let best: { project: ProjectData; match: WorktreeMatch } | null = null;
 
   for (const p of projects) {
-    // Existing: project root path
-    if (p.projectPath) {
-      candidates.push({ project: p, path: p.projectPath });
-    }
-    // New: worktree paths
-    for (const wt of p.worktrees ?? []) {
-      if (wt.worktreePath) {
-        candidates.push({ project: p, path: wt.worktreePath, worktreeId: wt.id });
-      }
+    const match = resolveWorktreeForPath(p, directory);
+    if (!match) continue;
+    if (!best || match.rootPath.length > best.match.rootPath.length) {
+      best = { project: p, match };
     }
   }
 
-  const matches = candidates
-    .filter((c) => {
-      const path = c.path.endsWith('/') ? c.path.slice(0, -1) : c.path;
-      return cwd === path || cwd.startsWith(path + '/');
-    })
-    .sort((a, b) => {
-      // Longest path wins; on tie, prefer worktree match over project root
-      const lenDiff = b.path.length - a.path.length;
-      if (lenDiff !== 0) return lenDiff;
-      if (a.worktreeId && !b.worktreeId) return -1;
-      if (!a.worktreeId && b.worktreeId) return 1;
-      return 0;
-    });
-
-  if (matches.length === 0) return null;
-  return { project: matches[0].project, worktreeId: matches[0].worktreeId };
+  if (!best) return null;
+  return { project: best.project, worktreeId: best.match.worktreeId };
 }
 
 export type ResolutionSource = 'flag' | 'cwd' | 'worktree' | 'default' | 'none';
@@ -94,27 +72,19 @@ export interface ResolvedProjectWorktree {
   worktreeId?: string;
 }
 
-// TODO(slice-186): Consider extracting core resolution logic (path matching, worktree matching)
-// to packages/core if MCP server needs CWD-like resolution. Currently CLI-only since MCP uses
-// explicit IDs. See 180-slices.initiative-context-worktree.md for context.
-
 /** Options for resolveProjectWorktree. */
 export interface ResolveProjectWorktreeOptions {
   /** Explicit --project flag value (name or id). */
   project?: string;
-  /** Explicit --worktree flag value (name or id) — overrides CWD-derived worktreeId. */
-  worktree?: string;
 }
 
 /**
  * Resolves which project and (optionally) worktree to use via a three-step chain:
  *
- * 1. explicit --project flag → findByNameOrId
+ * 1. explicit --project flag → findByNameOrId, then CWD is checked against
+ *    that project's own worktrees via resolveWorktreeForPath
  * 2. CWD detection → findProjectByCwd (worktree-aware)
  * 3. Throw UserError with guidance
- *
- * When opts.worktree is provided and a project was resolved, also resolves the
- * worktreeId via findWorktreeByNameOrId.
  */
 export async function resolveProjectWorktree(
   opts: ResolveProjectWorktreeOptions,
@@ -127,15 +97,14 @@ export async function resolveProjectWorktree(
     const project = await findByNameOrId(explicit, store);
     if (!project) {
       throw new UserError(
-        `Project '${explicit}' not found.\n` +
-          '  Check the spelling, or run cf project list to see available projects.',
+        `Project '${explicit}' not found.`,
+        'PROJECT_NOT_FOUND',
+        `Check the spelling, or run cf project list to see available projects.`,
       );
     }
     const resolved: ResolvedProjectWorktree = { id: project.id, source: 'flag' };
-    if (opts.worktree) {
-      const wt = await findWorktreeByNameOrId(project.id, opts.worktree, store);
-      if (wt) resolved.worktreeId = wt.id;
-    }
+    const match = resolveWorktreeForPath(project, process.cwd());
+    if (match?.worktreeId) resolved.worktreeId = match.worktreeId;
     return resolved;
   }
 
@@ -166,10 +135,11 @@ export async function resolveProjectWorktree(
 
   // Step 3: no resolution
   throw new UserError(
-    'No project specified and no registered project found at current path.\n' +
-      '  cf init                    # register current directory as a project\n' +
-      '  --project <name>           # specify a project explicitly\n' +
-      '  cf project list            # see registered projects',
+    'No project specified and no registered project found at current path.',
+    'PROJECT_NOT_FOUND',
+    `cf init                    # register current directory as a project\n` +
+      `  --project <name>           # specify a project explicitly\n` +
+      `  cf project list            # see registered projects`,
   );
 }
 
@@ -206,4 +176,28 @@ export async function findWorktreeByNameOrId(
   // Case-insensitive name match
   const lower = nameOrId.toLowerCase();
   return worktrees.find((wt) => wt.name.toLowerCase() === lower);
+}
+
+/** A registered project known to have a path on disk. */
+export type PathedProject = ProjectData & { projectPath: string };
+
+/**
+ * Resolve the project for a path-bound command (`--project`, else the current
+ * directory) and require that it has a configured project path.
+ */
+export async function resolvePathedProject(explicit: string | undefined): Promise<PathedProject> {
+  const store = new FileProjectStore();
+  const { id } = await resolveProjectId(explicit, store);
+  const project = await store.getById(id);
+
+  if (!project) {
+    throw new UserError(`Project not found: '${id}'.`);
+  }
+  if (!project.projectPath) {
+    throw new UserError(
+      `Project '${project.name}' has no configured project path.\n` +
+        '  Run cf init in the project directory to set the path.',
+    );
+  }
+  return { ...project, projectPath: project.projectPath };
 }

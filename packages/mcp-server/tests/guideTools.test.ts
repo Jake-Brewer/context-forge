@@ -3,6 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerGuideTools } from '../src/tools/guideTools.js';
+// Imported, not retyped: the assertion must track the constant if it changes.
+import { GUIDE_MANAGED_NOTICE } from '@context-forge/core';
 
 // --- Mocks ---
 
@@ -13,23 +15,52 @@ const mockSyncWorktrees = vi.fn();
 const mockCheckSyncStatus = vi.fn();
 const mockGetById = vi.fn();
 
-vi.mock('@context-forge/core/node', () => ({
-  FileProjectStore: vi.fn().mockImplementation(() => ({
-    getById: mockGetById,
-  })),
-  GuideManager: vi.fn().mockImplementation(() => ({
-    status: mockStatus,
-    install: mockInstall,
-    update: mockUpdate,
-    syncWorktrees: mockSyncWorktrees,
-  })),
-  GuideDetector: vi.fn().mockImplementation(() => ({
-    checkSyncStatus: mockCheckSyncStatus,
-  })),
-  ConfigManager: vi.fn().mockImplementation(() => ({
-    get: vi.fn().mockResolvedValue({ value: '', source: 'default' }),
-  })),
-}));
+// Real BranchGuardBlockedError/BranchGuardWarnError (via importActual) so `instanceof`
+// checks in guideTools.ts behave correctly, while the rest of the barrel stays mocked.
+vi.mock('@context-forge/core/node', async () => {
+  const actual = await vi.importActual<typeof import('@context-forge/core/node')>(
+    '@context-forge/core/node'
+  );
+  return {
+    FileProjectStore: vi.fn().mockImplementation(() => ({
+      getById: mockGetById,
+      getAll: vi.fn().mockResolvedValue([]),
+    })),
+    GuideManager: vi.fn().mockImplementation(() => ({
+      status: mockStatus,
+      install: mockInstall,
+      update: mockUpdate,
+      syncWorktrees: mockSyncWorktrees,
+    })),
+    // Mirrors the real constants in core/guides/types.ts.
+    GUIDE_MANAGED_NOTICE:
+      'This directory is managed by cf and overwritten on `cf guides update`. ' +
+      'Put project-specific customizations under `project-documents/user/`.',
+    CHECKOUT_STATE_LABELS: {
+      in_sync: 'in sync',
+      out_of_sync: 'out of sync',
+      not_initialized: 'not initialized',
+    },
+    GuideDetector: vi.fn().mockImplementation(() => ({
+      checkSyncStatus: mockCheckSyncStatus,
+    })),
+    ConfigManager: vi.fn().mockImplementation(() => ({
+      get: vi.fn().mockResolvedValue({ value: '', source: 'default' }),
+    })),
+    BranchGuardBlockedError: actual.BranchGuardBlockedError,
+    BranchGuardWarnError: actual.BranchGuardWarnError,
+    // Strategy vocabulary is data, not behavior: pass the real definitions
+    // through so the tool schema and description are the ones users see.
+    GUIDE_METHODS: actual.GUIDE_METHODS,
+    GUIDE_METHOD_DEPRECATED_ALIASES: actual.GUIDE_METHOD_DEPRECATED_ALIASES,
+    GUIDE_STRATEGIES: actual.GUIDE_STRATEGIES,
+    describeGuideStrategy: actual.describeGuideStrategy,
+    guideMethodDeprecationMessage: actual.guideMethodDeprecationMessage,
+    guideExcludeNotices: actual.guideExcludeNotices,
+  };
+});
+
+import { BranchGuardBlockedError, BranchGuardWarnError } from '@context-forge/core/node';
 
 // Mock resolveProjectId to return the provided ID directly
 vi.mock('../src/tools/resolveProjectId.js', () => ({
@@ -133,6 +164,100 @@ describe('guide_status', () => {
   });
 });
 
+describe('guide_status checkout reporting (#80)', () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetById.mockResolvedValue(sampleProject);
+    // The sample project has worktrees, so guide_status also reports their
+    // per-worktree sync state.
+    mockCheckSyncStatus.mockResolvedValue('in_sync');
+    const ctx = await createTestClient();
+    client = ctx.client;
+    cleanup = ctx.cleanup;
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  it('reports an uninitialized checkout with its display label, without initializing', async () => {
+    mockStatus.mockResolvedValue({
+      installed: true,
+      method: 'submodule',
+      checkout: 'not_initialized',
+      version: null,
+      path: '/test/project/project-documents/ai-project-guide',
+      source: 'https://github.com/ecorkran/ai-project-guide.git',
+      latestVersion: 'v0.13.2',
+      updateAvailable: false,
+      usingBundledPrompt: false,
+    });
+
+    const result = await client.callTool({
+      name: 'guide_status',
+      arguments: { projectId: 'test-project' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.checkout).toBe('not_initialized');
+    expect(parsed.checkoutLabel).toBe('not initialized');
+    // guide_status is a status command: it reports, it does not repair.
+    expect(mockInstall).not.toHaveBeenCalled();
+  });
+
+  it('includes the managed-directory notice so a client can surface it (#82)', async () => {
+    mockStatus.mockResolvedValue({
+      installed: true,
+      method: 'submodule',
+      checkout: 'in_sync',
+      version: 'v0.13.2',
+      path: '/test/project/project-documents/ai-project-guide',
+      source: 'https://github.com/ecorkran/ai-project-guide.git',
+      latestVersion: 'v0.13.2',
+      updateAvailable: false,
+      usingBundledPrompt: false,
+    });
+
+    const result = await client.callTool({
+      name: 'guide_status',
+      arguments: { projectId: 'test-project' },
+    });
+
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.managedNotice).toBe(GUIDE_MANAGED_NOTICE);
+  });
+
+  it('omits the label for a tarball install, which has no checkout state', async () => {
+    mockStatus.mockResolvedValue({
+      installed: true,
+      method: 'tarball',
+      checkout: null,
+      version: 'v0.13.2',
+      path: '/test/project/project-documents/ai-project-guide',
+      source: 'https://github.com/ecorkran/ai-project-guide.git',
+      latestVersion: 'v0.13.2',
+      updateAvailable: false,
+      usingBundledPrompt: false,
+    });
+
+    const result = await client.callTool({
+      name: 'guide_status',
+      arguments: { projectId: 'test-project' },
+    });
+
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.checkout).toBeNull();
+    expect(parsed.checkoutLabel).toBeUndefined();
+  });
+});
+
 describe('guide_install', () => {
   let client: Client;
   let cleanup: () => Promise<void>;
@@ -171,6 +296,65 @@ describe('guide_install', () => {
     const parsed = JSON.parse(content[0].text);
     expect(parsed.success).toBe(true);
     expect(parsed.method).toBe('clone');
+  });
+
+  it('accepts the canonical tarball strategy and returns no notices', async () => {
+    mockInstall.mockResolvedValue({
+      success: true,
+      version: 'v0.13.2',
+      method: 'tarball',
+      path: '/test/project/project-documents/ai-project-guide',
+    });
+
+    const result = await client.callTool({
+      name: 'guide_install',
+      arguments: { projectId: 'test-project', strategy: 'tarball' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.method).toBe('tarball');
+    expect(result.notices).toBeUndefined();
+    expect(mockInstall).toHaveBeenCalledWith('tarball', undefined, { version: undefined });
+  });
+
+  it('accepts the deprecated manual alias and returns one notice (D4, D5)', async () => {
+    mockInstall.mockResolvedValue({
+      success: true,
+      version: 'v0.13.2',
+      method: 'tarball',
+      path: '/test/project/project-documents/ai-project-guide',
+      deprecatedAlias: 'manual',
+    });
+
+    const result = await client.callTool({
+      name: 'guide_install',
+      arguments: { projectId: 'test-project', strategy: 'manual' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.method).toBe('tarball');
+    // notices ride alongside content, the one shape every tool uses; the
+    // primary payload is unchanged for clients that ignore the field.
+    const notices = result.notices as string[];
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('deprecated');
+    expect(notices[0]).toContain('tarball');
+    // The raw alias reaches core, which owns normalization.
+    expect(mockInstall).toHaveBeenCalledWith('manual', undefined, { version: undefined });
+  });
+
+  it('rejects a strategy outside the accepted set', async () => {
+    const result = await client.callTool({
+      name: 'guide_install',
+      arguments: { projectId: 'test-project', strategy: 'symlink' },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockInstall).not.toHaveBeenCalled();
   });
 
   it('returns error result when already installed', async () => {
@@ -234,6 +418,196 @@ describe('guide_update', () => {
     expect(result.isError).toBe(true);
     const content = result.content as { type: string; text: string }[];
     expect(content[0].text).toContain('not installed');
+  });
+
+  it('BranchGuardBlockedError: errorResult returned, message includes trunk/current', async () => {
+    mockUpdate.mockRejectedValue(new BranchGuardBlockedError('dev/erik', 'main'));
+
+    const result = await client.callTool({
+      name: 'guide_update',
+      arguments: { projectId: 'test-project' },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as { type: string; text: string }[];
+    expect(content[0].text).toContain('dev/erik');
+    expect(content[0].text).toContain('main');
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('BranchGuardWarnError, called without confirm: errorResult instructs retry with confirm: true, update called once', async () => {
+    mockUpdate.mockRejectedValue(new BranchGuardWarnError('main', 'feature-x', 'descends'));
+
+    const result = await client.callTool({
+      name: 'guide_update',
+      arguments: { projectId: 'test-project' },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as { type: string; text: string }[];
+    expect(content[0].text).toContain('confirm: true');
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('BranchGuardWarnError, called with confirm: true: manager.update({confirmed: true}) called, jsonResult with success shape', async () => {
+    mockUpdate
+      .mockRejectedValueOnce(new BranchGuardWarnError('main', 'feature-x', 'descends'))
+      .mockResolvedValueOnce({
+        success: true, previousVersion: 'v0.12.0', newVersion: 'v0.13.2', method: 'submodule',
+      });
+
+    const result = await client.callTool({
+      name: 'guide_update',
+      arguments: { projectId: 'test-project', confirm: true },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockUpdate).toHaveBeenNthCalledWith(2, { confirmed: true });
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.success).toBe(true);
+    expect(parsed.newVersion).toBe('v0.13.2');
+  });
+});
+
+describe('guide_install / guide_update --version and --source parameters', () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+  const tarballOnlyError =
+    '--version and local --source apply to tarball installs only (this guide is installed as submodule)';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetById.mockResolvedValue(sampleProject);
+    const ctx = await createTestClient();
+    client = ctx.client;
+    cleanup = ctx.cleanup;
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  function textOf(result: Awaited<ReturnType<Client['callTool']>>): string {
+    return (result.content as { type: string; text: string }[])[0].text;
+  }
+
+  it('guide_install passes source and version to the manager', async () => {
+    mockInstall.mockResolvedValue({ success: true, version: 'v0.2.0', method: 'tarball', path: '/p' });
+
+    const result = await client.callTool({
+      name: 'guide_install',
+      arguments: { projectId: 'test-project', strategy: 'tarball', source: 'guides/g.tgz', version: 'v0.2.0' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockInstall).toHaveBeenCalledWith('tarball', 'guides/g.tgz', { version: 'v0.2.0' });
+  });
+
+  it('guide_update passes source and version to the manager', async () => {
+    mockUpdate.mockResolvedValue({ success: true, previousVersion: 'v0.1.0', newVersion: 'v0.2.0', method: 'tarball' });
+
+    const result = await client.callTool({
+      name: 'guide_update',
+      arguments: { projectId: 'test-project', source: 'guides/g.tgz', version: 'v0.2.0' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockUpdate).toHaveBeenCalledWith({ source: 'guides/g.tgz', version: 'v0.2.0' });
+  });
+
+  it('guide_update keeps source and version on the confirmed retry', async () => {
+    mockUpdate
+      .mockRejectedValueOnce(new BranchGuardWarnError('main', 'feature-x', 'descends'))
+      .mockResolvedValueOnce({ success: true, previousVersion: 'v0.1.0', newVersion: 'v0.2.0', method: 'tarball' });
+
+    await client.callTool({
+      name: 'guide_update',
+      arguments: { projectId: 'test-project', version: 'v0.2.0', confirm: true },
+    });
+
+    expect(mockUpdate).toHaveBeenNthCalledWith(2, { source: undefined, version: 'v0.2.0', confirmed: true });
+  });
+
+  it.each(['guide_install', 'guide_update'])('%s returns the tarball-only error as a tool error', async (name) => {
+    mockInstall.mockRejectedValue(new Error(tarballOnlyError));
+    mockUpdate.mockRejectedValue(new Error(tarballOnlyError));
+
+    const result = await client.callTool({ name, arguments: { projectId: 'test-project', version: 'v0.2.0' } });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('tarball installs only');
+  });
+
+  it('lists the new parameters in the tool schemas', async () => {
+    const { tools } = await client.listTools();
+    const properties = (name: string): string[] =>
+      Object.keys((tools.find((t) => t.name === name)?.inputSchema.properties ?? {}) as Record<string, unknown>);
+
+    expect(properties('guide_install')).toEqual(expect.arrayContaining(['source', 'version']));
+    expect(properties('guide_update')).toEqual(expect.arrayContaining(['source', 'version']));
+  });
+});
+
+describe('guide_update preview reporting', () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetById.mockResolvedValue(sampleProject);
+    const ctx = await createTestClient();
+    client = ctx.client;
+    cleanup = ctx.cleanup;
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  function parse(result: Awaited<ReturnType<Client['callTool']>>): Record<string, unknown> {
+    return JSON.parse((result.content as { type: string; text: string }[])[0].text) as Record<string, unknown>;
+  }
+
+  it('returns the preview counts and passes the strategy no confirm callback', async () => {
+    mockUpdate.mockResolvedValue({
+      success: true, previousVersion: 'v0.20.2', newVersion: 'v0.21.0', method: 'tarball',
+      preview: { added: 12, removed: 3, changed: 41 },
+    });
+
+    const result = await client.callTool({ name: 'guide_update', arguments: { projectId: 'test-project' } });
+
+    expect(parse(result).preview).toEqual({ added: 12, removed: 3, changed: 41 });
+    expect(mockUpdate.mock.calls[0][0]).not.toHaveProperty('confirm');
+  });
+
+  it('returns unchanged: true when nothing differs', async () => {
+    mockUpdate.mockResolvedValue({
+      success: true, previousVersion: 'v0.21.0', newVersion: 'v0.21.0', method: 'tarball',
+      unchanged: true, preview: { added: 0, removed: 0, changed: 0 },
+    });
+
+    const result = await client.callTool({ name: 'guide_update', arguments: { projectId: 'test-project' } });
+
+    expect(parse(result)).toMatchObject({ unchanged: true, preview: { added: 0, removed: 0, changed: 0 } });
+  });
+
+  it('confirm: true answers only the branch guard and leaves the preview flow untouched', async () => {
+    mockUpdate
+      .mockRejectedValueOnce(new BranchGuardWarnError('main', 'feature-x', 'descends'))
+      .mockResolvedValueOnce({
+        success: true, previousVersion: 'v0.20.2', newVersion: 'v0.21.0', method: 'tarball',
+        preview: { added: 1, removed: 0, changed: 0 },
+      });
+
+    const result = await client.callTool({
+      name: 'guide_update',
+      arguments: { projectId: 'test-project', confirm: true },
+    });
+
+    expect(parse(result).preview).toEqual({ added: 1, removed: 0, changed: 0 });
+    expect(mockUpdate.mock.calls[1][0]).toMatchObject({ confirmed: true });
+    expect(mockUpdate.mock.calls[1][0]).not.toHaveProperty('confirm');
   });
 });
 
@@ -369,5 +743,98 @@ describe('error handling', () => {
     expect(result.isError).toBe(true);
     const content = result.content as { type: string; text: string }[];
     expect(content[0].text).toContain('Unexpected filesystem error');
+  });
+});
+
+describe('guide.exclude notices', () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetById.mockResolvedValue(sampleProject);
+    const ctx = await createTestClient();
+    client = ctx.client;
+    cleanup = ctx.cleanup;
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  it('guide_install returns a notice for an unmatched pattern', async () => {
+    mockInstall.mockResolvedValue({
+      success: true,
+      version: 'v0.19.3',
+      method: 'tarball',
+      path: '/test/project/project-documents/ai-project-guide',
+      exclude: ['tool-guide'],
+      unmatchedExclude: ['tool-guide'],
+    });
+
+    const result = await client.callTool({ name: 'guide_install', arguments: { projectId: 'test-project' } });
+
+    expect(result.notices).toEqual(['guide.exclude entry "tool-guide" matched nothing in v0.19.3']);
+  });
+
+  it('guide_update returns a notice when a submodule install ignores the key', async () => {
+    mockUpdate.mockResolvedValue({
+      success: true,
+      previousVersion: 'v0.19.3',
+      newVersion: 'v0.19.3',
+      method: 'submodule',
+      excludeIgnored: true,
+    });
+
+    const result = await client.callTool({ name: 'guide_update', arguments: { projectId: 'test-project' } });
+
+    expect(result.notices).toEqual(['guide.exclude is set but ignored for submodule installs']);
+  });
+
+  it('guide_update returns the notice when the config file was left out of the guide commit', async () => {
+    const notice = '.context-forge.toml has other uncommitted changes; it was left out of the guide commit';
+    mockUpdate.mockResolvedValue({
+      success: true,
+      previousVersion: 'v0.19.3',
+      newVersion: 'v0.19.3',
+      method: 'tarball',
+      excludeChanged: true,
+      configCommitted: false,
+      configNotice: notice,
+    });
+
+    const result = await client.callTool({ name: 'guide_update', arguments: { projectId: 'test-project' } });
+
+    expect(result.notices).toEqual([notice]);
+  });
+
+  it('guide_update returns no notices when there is nothing to report', async () => {
+    mockUpdate.mockResolvedValue({
+      success: true,
+      previousVersion: 'v0.19.3',
+      newVersion: 'v0.19.3',
+      method: 'tarball',
+    });
+
+    const result = await client.callTool({ name: 'guide_update', arguments: { projectId: 'test-project' } });
+
+    expect(result.notices).toBeUndefined();
+  });
+
+  it('guide_status JSON includes excludeApplied and excludeConfigured', async () => {
+    mockStatus.mockResolvedValue({
+      ...sampleGuideInfo,
+      method: 'tarball',
+      checkout: null,
+      excludeApplied: ['tool-guides'],
+      excludeConfigured: ['framework-guides', 'tool-guides'],
+    });
+
+    const result = await client.callTool({ name: 'guide_status', arguments: { projectId: 'test-project' } });
+
+    const content = result.content as { type: string; text: string }[];
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.excludeApplied).toEqual(['tool-guides']);
+    expect(parsed.excludeConfigured).toEqual(['framework-guides', 'tool-guides']);
   });
 });

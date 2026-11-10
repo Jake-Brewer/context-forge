@@ -1,9 +1,13 @@
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import type { ProjectData } from '../types/project.js';
 import type { WorktreeInfo } from '../types/git.js';
+import { validateFrontmatter } from '../schema/frontmatterSchema.js';
+import { discoverAllDocuments } from '../schema/frontmatterFileValidator.js';
 import type { IArtifactIntrospector } from './interfaces.js';
+import { STATUS } from './types.js';
+import { normalizeStatus } from './parsers/statusNormalizer.js';
 import type {
   ConsistencyFinding,
   ConsistencyCheckResult,
@@ -15,6 +19,31 @@ import type {
 } from './types.js';
 import { resolveArtifactPath } from '../schema/resolveFileByIndex.js';
 import { updateCheckbox, updateFrontmatterField } from './writers/markdownWriter.js';
+import { formatDateProject } from '../project-defaults.js';
+import { applyArchiveDevlogFix } from './archiveDevlogFix.js';
+import { ARCHIVE_DEVLOG_ACTION, devlogSizeFindings } from './devlogSizeFinding.js';
+import { resolveInitiativePlanPath } from './ArtifactIntrospector.js';
+import type { ConfigManager } from '../config/ConfigManager.js';
+import { isDecisionGateEnabled, readPendingDecisions } from '../schema/decisionGate.js';
+import { CONFIG_KEYS, ConfigScope } from '../config/ConfigKeys.js';
+import { getProjectConfigPath, getProjectPersonalConfigPath } from '../config/configPaths.js';
+import {
+  resolveGateConfig,
+  evaluateReviewGate,
+  evaluateEntryGate,
+  positionToReviewType,
+  type Boundary,
+  type GateEvaluation,
+  type GateResult,
+  type ExemptReason,
+  type WeakPart,
+  isBlockingGate,
+  EXEMPT_NOTE,
+  EXEMPT_REASON,
+  WEAK_PASS_KEY,
+  type ResolvedGate,
+} from './reviewGate.js';
+import { retroactiveSkipFindings, ruleRetroactiveEntries } from './retroactiveRules.js';
 
 /**
  * Extract numeric slice index from a fileSlice value like "165-slice.workflow-navigator".
@@ -25,16 +54,18 @@ function extractSliceIndex(fileSlice: string | undefined): number | null {
   return match ? parseInt(match[1], 10) : null;
 }
 
+/** Rule id of the pending-PM-decision finding. */
+const PENDING_DECISION_RULE = 'pending-decision';
+
 /**
  * Compares related artifact states within a project and flags mismatches.
  * Optionally applies non-destructive corrections to fixable findings.
  */
 export class ConsistencyChecker {
-  private readonly introspector: IArtifactIntrospector;
-
-  constructor(introspector: IArtifactIntrospector) {
-    this.introspector = introspector;
-  }
+  constructor(
+    private readonly introspector: IArtifactIntrospector,
+    private readonly config?: ConfigManager,
+  ) {}
 
   /**
    * Run detection rules against the active slice and return structured findings.
@@ -52,9 +83,10 @@ export class ConsistencyChecker {
 
     const slicePlanResult = await this.safeParseSlicePlan(project, projectPath);
     const slicePlanPath = this.resolveSlicePlanPath(project, projectPath);
+    const resolvedGate = this.config ? await resolveGateConfig(this.config) : null;
 
     const findings = await this.checkSlice(
-      projectPath, sliceIndex, slicePlanResult, slicePlanPath,
+      projectPath, sliceIndex, slicePlanResult, slicePlanPath, resolvedGate,
     );
 
     return this.buildResult(projectPath, findings);
@@ -86,6 +118,11 @@ export class ConsistencyChecker {
         const planResult = await this.introspector.parseSlicePlan(planPath);
         parsedPlans.set(planPath, planResult);
         for (const entry of planResult.entries) {
+          // Fallback (unindexed-format) indices are per-file sequential counters,
+          // not real project-wide slice indices — they must never enter the
+          // cross-plan index space, or they collide with real indices from other
+          // plans (see slice 913 TD-1).
+          if (entry.indexSource === 'fallback') continue;
           if (!uniqueEntries.has(entry.index)) {
             uniqueEntries.set(entry.index, { entry, planPath, planResult });
           }
@@ -95,17 +132,13 @@ export class ConsistencyChecker {
       }
     }
 
-    // If no plans found or all plans empty, return empty result
-    if (uniqueEntries.size === 0) {
-      return this.emptyResult(projectPath);
-    }
-
     const allFindings: ConsistencyFinding[] = [];
+    const resolvedGate = this.config ? await resolveGateConfig(this.config) : null;
 
     // Run rules 1-5 for each unique slice entry across all plans
     for (const [, { entry, planPath, planResult }] of uniqueEntries) {
       const sliceFindings = await this.checkSlice(
-        projectPath, entry.index, planResult, planPath,
+        projectPath, entry.index, planResult, planPath, resolvedGate,
       );
       // Prefix each finding's description with [sliceIndex] for attribution
       for (const finding of sliceFindings) {
@@ -113,6 +146,14 @@ export class ConsistencyChecker {
       }
       allFindings.push(...sliceFindings);
     }
+
+    // Retroactive entries are skipped by the gate; say so once per plan (D3)
+    const plansParsed = [...parsedPlans.values()];
+    if (resolvedGate !== null) {
+      allFindings.push(...retroactiveSkipFindings(plansParsed));
+    }
+    // The marker's structural rules apply whether or not gating is on (D4)
+    allFindings.push(...await ruleRetroactiveEntries(projectPath, plansParsed));
 
     // Run aggregate rules (6-9) across all discovered slice plans
     for (const [planPath, planResult] of parsedPlans) {
@@ -132,50 +173,59 @@ export class ConsistencyChecker {
       );
     }
 
-    // Rule 11: arch files missing status field
-    const allArchFiles = await this.discoverAllArchFiles(projectPath);
-    if (project.fileArch) {
-      const configuredArchRel = resolveArtifactPath('fileArch', project.fileArch);
-      if (configuredArchRel) {
-        const configuredArchFull = join(projectPath, configuredArchRel);
-        if (!allArchFiles.includes(configuredArchFull)) allArchFiles.push(configuredArchFull);
-      }
-    }
-    // Build index → planResult map from already-parsed pairs
-    const pairedPlanByArchPath = new Map(archPlanPairs.map(({ archPath, planResult }) => [archPath, planResult]));
-    for (const archPath of allArchFiles) {
-      allFindings.push(
-        ...await this.ruleArchMissingStatus(archPath, pairedPlanByArchPath.get(archPath) ?? null),
-      );
-    }
+    // Rule 9: pre-slice-plan (arch) review gate — every discovered arch file, not just paired ones
+    allFindings.push(
+      ...await this.ruleArchReviewGate(project, projectPath, resolvedGate),
+    );
 
     // Rule 10: stale worktree paths
     allFindings.push(
       ...await this.ruleStaleWorktreePath(project, projectPath),
     );
 
+    // Rules 13 & 14: initiative plan checks
+    const initiativePlanPath = await this.findInitiativePlan(projectPath);
+    if (initiativePlanPath) {
+      try {
+        const initiativePlanResult = await this.introspector.parseSlicePlan(initiativePlanPath);
+        allFindings.push(
+          ...await this.ruleInitiativePlanStatusVsEntries(initiativePlanPath, initiativePlanResult),
+        );
+        allFindings.push(
+          ...await this.ruleInitiativeEntryVsArch(initiativePlanPath, initiativePlanResult, projectPath),
+        );
+      } catch {
+        // Skip if initiative plan is unparseable
+      }
+    }
+
+    // Rule 12: frontmatter schema validation across all documents
+    allFindings.push(
+      ...await this.ruleFrontmatterSchema(projectPath, project.name),
+    );
+
+    // Rule 15: personal-scope config keys committed to the shared project file
+    allFindings.push(
+      ...await this.rulePersonalConfigInSharedFile(projectPath),
+    );
+
+    // Rule 16: DEVLOG.md over devlog.max_bytes (slice 936)
+    allFindings.push(
+      ...await this.ruleDevlogSize(projectPath, project.name),
+    );
+
     return this.buildResult(projectPath, allFindings);
   }
 
   /**
-   * Run check(), then apply non-destructive corrections to fixable findings.
+   * Apply non-destructive corrections to a check result's fixable findings.
+   * Writes in place with no worktree routing: callers with worktrees go
+   * through planRoutedFixes + applyFixPlan (slice 213), which call this per view.
    */
-  async fix(project: ProjectData): Promise<ConsistencyFixResult> {
-    const checkResult = await this.check(project);
-    return this.applyFixes(checkResult);
-  }
-
-  /**
-   * Run checkAll(), then apply non-destructive corrections to fixable findings.
-   * Single pass only — no re-checking after fixes.
-   */
-  async fixAll(project: ProjectData): Promise<ConsistencyFixResult> {
-    const checkResult = await this.checkAll(project);
-    return this.applyFixes(checkResult);
-  }
-
-  /** Apply fixes to a check result — shared by fix() and fixAll(). */
-  async applyFixes(checkResult: ConsistencyCheckResult): Promise<ConsistencyFixResult> {
+  async applyFixes(
+    checkResult: ConsistencyCheckResult,
+    dateStamp: string = formatDateProject()
+  ): Promise<ConsistencyFixResult> {
     const fixLog: ConsistencyFixResult['fixLog'] = [];
     const fixErrors: string[] = [];
     let fixed = 0;
@@ -195,10 +245,16 @@ export class ConsistencyChecker {
           fixed++;
         } else if (finding.fixAction.type === 'update-frontmatter') {
           const { key, value } = finding.fixAction.detail as { key: string; value: string };
-          const entry = await updateFrontmatterField(finding.fixAction.filePath, key, value);
+          const entry = await updateFrontmatterField(finding.fixAction.filePath, key, value, dateStamp);
           entry.rule = finding.rule;
           fixLog.push(entry);
           fixed++;
+        } else if (finding.fixAction.type === ARCHIVE_DEVLOG_ACTION) {
+          const entry = await applyArchiveDevlogFix(this.config, finding, dateStamp);
+          if (entry) {
+            fixLog.push(entry);
+            fixed++;
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -206,7 +262,7 @@ export class ConsistencyChecker {
       }
     }
 
-    return { ...checkResult, fixed, fixLog, fixErrors };
+    return { ...checkResult, fixed, fixLog, fixErrors, deferred: [], commits: [] };
   }
 
   // --- Per-slice check logic ---
@@ -217,12 +273,19 @@ export class ConsistencyChecker {
     sliceIndex: number,
     slicePlanResult: { entries: SlicePlanEntry[] } | null,
     slicePlanPath: string | null,
+    resolvedGate: ResolvedGate | null,
   ): Promise<ConsistencyFinding[]> {
     const docs = await this.safeDetectDocuments(projectPath, sliceIndex);
     const taskResult = await this.safeParseTaskFile(docs?.taskFile, projectPath);
     const sliceFrontmatter = await this.safeParseFrontmatter(docs?.sliceDesign, projectPath);
 
-    const planEntry = slicePlanResult?.entries.find((e) => e.index === sliceIndex) ?? null;
+    // Prefer an explicit (NNN) entry over an auto-numbered one sharing the index (#67),
+    // so a real slice never resolves to a placeholder.
+    const indexMatches = slicePlanResult?.entries.filter((e) => e.index === sliceIndex) ?? [];
+    const planEntry =
+      indexMatches.find((e) => e.indexSource === 'explicit') ??
+      indexMatches.find((e) => e.indexSource === 'fallback') ??
+      null;
     const sliceDesignRel = docs?.sliceDesign ?? null;
 
     const findings: ConsistencyFinding[] = [];
@@ -231,19 +294,28 @@ export class ConsistencyChecker {
       ...this.ruleTaskVsPlan(taskResult, planEntry, slicePlanPath, slicePlanResult, sliceIndex),
     );
     findings.push(
-      ...this.ruleFrontmatterVsComputed(sliceFrontmatter, taskResult, sliceDesignRel, projectPath),
+      ...this.ruleFrontmatterVsComputed(sliceFrontmatter, taskResult, sliceDesignRel, projectPath, sliceIndex),
     );
     findings.push(
       ...this.ruleMissingArtifacts(docs, planEntry, sliceIndex),
     );
     findings.push(
-      ...this.rulePlanVsFrontmatter(planEntry, sliceFrontmatter, slicePlanPath, sliceDesignRel, projectPath),
+      ...this.rulePlanVsFrontmatter(planEntry, sliceFrontmatter, slicePlanPath, sliceDesignRel, projectPath, sliceIndex),
     );
 
     const taskFileFrontmatter = await this.safeParseTaskFileFrontmatter(docs?.taskFile, projectPath);
     findings.push(
-      ...this.ruleTaskFileStatus(taskResult, taskFileFrontmatter),
+      ...this.ruleTaskFileStatus(taskResult, taskFileFrontmatter, sliceIndex),
     );
+
+    findings.push(
+      ...await this.ruleReviewGate(planEntry, sliceIndex, projectPath, slicePlanPath, resolvedGate, docs),
+    );
+
+    // Same scope as the navigator gate (D4): a slice whose tasks are all done is past the point of blocking.
+    if (sliceDesignRel && taskResult?.inferredStatus !== STATUS.Complete) {
+      findings.push(...await this.pendingDecisionFindings(projectPath, sliceDesignRel, sliceIndex));
+    }
 
     return findings;
   }
@@ -262,7 +334,7 @@ export class ConsistencyChecker {
 
     if (!taskResult || !planEntry || !slicePlanPath || !slicePlanResult) return findings;
 
-    const tasksComplete = taskResult.inferredStatus === 'complete';
+    const tasksComplete = taskResult.inferredStatus === STATUS.Complete;
     const sliceChecked = planEntry.isChecked;
 
     if (tasksComplete && !sliceChecked) {
@@ -277,6 +349,7 @@ export class ConsistencyChecker {
           type: 'update-checkbox',
           filePath: slicePlanPath,
           detail: { lineIndex: planEntry.lineIndex, checked: true, entryIndex: sliceIndex },
+          subjectIndex: sliceIndex,
         },
       });
     }
@@ -293,7 +366,23 @@ export class ConsistencyChecker {
           type: 'update-checkbox',
           filePath: slicePlanPath,
           detail: { lineIndex: planEntry.lineIndex, checked: false, entryIndex: sliceIndex },
+          subjectIndex: sliceIndex,
         },
+      });
+    }
+
+    // Not-started boundary (TD-4): tasks have started (any checked, not all) but
+    // the plan entry is still unchecked. Not fixable — there is no single correct
+    // auto-fix for "in progress" (don't check the box; there's no in-progress
+    // checkbox state to write).
+    if (taskResult.inferredStatus === STATUS.InProgress && !sliceChecked) {
+      findings.push({
+        rule: 'task-vs-plan',
+        severity: 'warning',
+        location: slicePlanPath,
+        description: `Tasks in progress (${taskResult.completedTasks}/${taskResult.totalTasks}) but slice ${sliceIndex} is unchecked in plan`,
+        suggestedFix: `No single auto-fix for in_progress — leave the slice plan entry for (${sliceIndex}) unchecked until tasks complete`,
+        fixable: false,
       });
     }
 
@@ -306,46 +395,70 @@ export class ConsistencyChecker {
     taskResult: TaskFileResult | null,
     sliceDesignRelPath: string | null,
     projectPath: string,
+    sliceIndex: number,
   ): ConsistencyFinding[] {
     const findings: ConsistencyFinding[] = [];
 
     if (!frontmatter?.found || !frontmatter.data.status) return findings;
     if (!taskResult) return findings;
 
-    const fmStatus = frontmatter.data.status.toLowerCase();
-    const tasksComplete = taskResult.inferredStatus === 'complete';
+    // Lenient read: on-disk documents may carry any historical spelling
+    const fmStatus = normalizeStatus(frontmatter.data.status);
+    const tasksComplete = taskResult.inferredStatus === STATUS.Complete;
     const sliceDesignFullPath = sliceDesignRelPath
       ? join(projectPath, sliceDesignRelPath)
       : frontmatter.filePath;
 
-    if (fmStatus === 'complete' && !tasksComplete) {
+    if (fmStatus === STATUS.Complete && !tasksComplete) {
       findings.push({
         rule: 'frontmatter-vs-computed',
         severity: 'error',
         location: sliceDesignFullPath,
         description: `Frontmatter status is "complete" but tasks are incomplete (${taskResult.completedTasks}/${taskResult.totalTasks})`,
-        suggestedFix: 'Update frontmatter status to "in-progress"',
+        suggestedFix: 'Update frontmatter status to "in_progress"',
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: sliceDesignFullPath,
-          detail: { key: 'status', value: 'in-progress' },
+          detail: { key: 'status', value: STATUS.InProgress },
+          subjectIndex: sliceIndex,
         },
       });
     }
 
-    if ((fmStatus === 'in-progress' || fmStatus === 'not-started') && tasksComplete) {
+    if ((fmStatus === STATUS.InProgress || fmStatus === STATUS.NotStarted) && tasksComplete) {
       findings.push({
         rule: 'frontmatter-vs-computed',
         severity: 'warning',
         location: sliceDesignFullPath,
-        description: `Frontmatter status is "${fmStatus}" but all tasks are complete (${taskResult.completedTasks}/${taskResult.totalTasks})`,
+        description: `Frontmatter status is "${frontmatter.data.status}" but all tasks are complete (${taskResult.completedTasks}/${taskResult.totalTasks})`,
         suggestedFix: 'Update frontmatter status to "complete"',
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: sliceDesignFullPath,
-          detail: { key: 'status', value: 'complete' },
+          detail: { key: 'status', value: STATUS.Complete },
+          subjectIndex: sliceIndex,
+        },
+      });
+    }
+
+    // Not-started boundary (TD-4): tasks have started but design frontmatter
+    // still says not-started. Mirrors the branch above — same fix-action shape,
+    // different target value.
+    if (fmStatus === STATUS.NotStarted && taskResult.inferredStatus === STATUS.InProgress) {
+      findings.push({
+        rule: 'frontmatter-vs-computed',
+        severity: 'warning',
+        location: sliceDesignFullPath,
+        description: `Frontmatter status is "not_started" but tasks are in progress (${taskResult.completedTasks}/${taskResult.totalTasks})`,
+        suggestedFix: 'Update frontmatter status to "in_progress"',
+        fixable: true,
+        fixAction: {
+          type: 'update-frontmatter',
+          filePath: sliceDesignFullPath,
+          detail: { key: 'status', value: STATUS.InProgress },
+          subjectIndex: sliceIndex,
         },
       });
     }
@@ -362,26 +475,30 @@ export class ConsistencyChecker {
     const findings: ConsistencyFinding[] = [];
 
     const hasTaskFile = docs?.taskFile !== null && docs?.taskFile !== undefined;
+    const hasSliceDesign = docs?.sliceDesign !== null && docs?.sliceDesign !== undefined;
     const hasPlanEntry = planEntry !== null;
 
     if (hasTaskFile && !hasPlanEntry) {
       findings.push({
         rule: 'missing-artifact',
         severity: 'info',
-        location: docs!.taskFile![0],
+        location: docs.taskFile![0],
         description: `Task file exists for slice ${sliceIndex} but no matching slice plan entry found`,
         suggestedFix: 'Add an entry for this slice to the slice plan',
         fixable: false,
       });
     }
 
-    if (hasPlanEntry && !hasTaskFile) {
+    // Only flag missing task file when a slice design exists — otherwise the
+    // slice is in normal pre-work state (planned but not yet designed), which
+    // generates noise on every project with a long backlog.
+    if (hasPlanEntry && hasSliceDesign && !hasTaskFile) {
       findings.push({
         rule: 'missing-artifact',
         severity: 'info',
         location: `slice plan entry ${sliceIndex}`,
-        description: `Slice plan entry exists for ${sliceIndex} (${planEntry.name}) but no task file found`,
-        suggestedFix: 'Create a task file when ready to begin implementation',
+        description: `Slice ${sliceIndex} (${planEntry.name}) has a design but no task file`,
+        suggestedFix: 'Create a task file to begin implementation',
         fixable: false,
       });
     }
@@ -396,34 +513,37 @@ export class ConsistencyChecker {
     slicePlanPath: string | null,
     sliceDesignRelPath: string | null,
     projectPath: string,
+    sliceIndex: number,
   ): ConsistencyFinding[] {
     const findings: ConsistencyFinding[] = [];
 
     if (!planEntry || !frontmatter?.found || !frontmatter.data.status) return findings;
 
-    const fmStatus = frontmatter.data.status.toLowerCase();
+    // Lenient read: on-disk documents may carry any historical spelling
+    const fmStatus = normalizeStatus(frontmatter.data.status);
     const planChecked = planEntry.isChecked;
     const sliceDesignFullPath = sliceDesignRelPath
       ? join(projectPath, sliceDesignRelPath)
       : frontmatter.filePath;
 
-    if (planChecked && fmStatus !== 'complete') {
+    if (planChecked && fmStatus !== STATUS.Complete) {
       findings.push({
         rule: 'plan-vs-frontmatter',
         severity: 'warning',
         location: sliceDesignFullPath,
-        description: `Slice plan entry is checked but frontmatter status is "${fmStatus}"`,
+        description: `Slice plan entry is checked but frontmatter status is "${frontmatter.data.status}"`,
         suggestedFix: 'Update frontmatter status to "complete"',
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: sliceDesignFullPath,
-          detail: { key: 'status', value: 'complete' },
+          detail: { key: 'status', value: STATUS.Complete },
+          subjectIndex: sliceIndex,
         },
       });
     }
 
-    if (!planChecked && fmStatus === 'complete' && slicePlanPath) {
+    if (!planChecked && fmStatus === STATUS.Complete && slicePlanPath) {
       findings.push({
         rule: 'plan-vs-frontmatter',
         severity: 'warning',
@@ -435,6 +555,7 @@ export class ConsistencyChecker {
           type: 'update-checkbox',
           filePath: slicePlanPath,
           detail: { lineIndex: planEntry.lineIndex, checked: true },
+          subjectIndex: sliceIndex,
         },
       });
     }
@@ -446,18 +567,18 @@ export class ConsistencyChecker {
   private ruleTaskFileStatus(
     taskResult: TaskFileResult | null,
     taskFrontmatter: FrontmatterResult | null,
+    sliceIndex: number,
   ): ConsistencyFinding[] {
     const findings: ConsistencyFinding[] = [];
 
     if (!taskResult || !taskFrontmatter?.found || !taskFrontmatter.data.status) return findings;
 
-    const fmStatus = taskFrontmatter.data.status.toLowerCase().replace(/_/g, '-');
-    const computed = taskResult.inferredStatus; // 'complete' | 'in-progress' | 'not-started'
+    // Lenient read: on-disk documents may carry any historical spelling
+    const fmStatus = normalizeStatus(taskFrontmatter.data.status);
+    const computed = taskResult.inferredStatus;
     const taskFilePath = taskFrontmatter.filePath;
 
-    // Map task file status values to normalized form for comparison
-    // Task files use not_started/in_progress/complete in frontmatter
-    if (fmStatus === 'complete' && computed !== 'complete') {
+    if (fmStatus === STATUS.Complete && computed !== STATUS.Complete) {
       findings.push({
         rule: 'task-file-status',
         severity: 'error',
@@ -468,12 +589,13 @@ export class ConsistencyChecker {
         fixAction: {
           type: 'update-frontmatter',
           filePath: taskFilePath,
-          detail: { key: 'status', value: 'in_progress' },
+          detail: { key: 'status', value: STATUS.InProgress },
+          subjectIndex: sliceIndex,
         },
       });
     }
 
-    if (fmStatus !== 'complete' && computed === 'complete') {
+    if (fmStatus !== STATUS.Complete && computed === STATUS.Complete) {
       findings.push({
         rule: 'task-file-status',
         severity: 'warning',
@@ -484,12 +606,201 @@ export class ConsistencyChecker {
         fixAction: {
           type: 'update-frontmatter',
           filePath: taskFilePath,
-          detail: { key: 'status', value: 'complete' },
+          detail: { key: 'status', value: STATUS.Complete },
+          subjectIndex: sliceIndex,
         },
       });
     }
 
     return findings;
+  }
+
+  /**
+   * Rule: slice design has decisions still pending PM confirmation. Reported only (warning);
+   * the navigator, not the checker, blocks. No config means the gate is off.
+   */
+  private async pendingDecisionFindings(
+    projectPath: string,
+    sliceDesignRel: string,
+    sliceIndex: number,
+  ): Promise<ConsistencyFinding[]> {
+    if (!this.config || !(await isDecisionGateEnabled(this.config))) return [];
+    try {
+      const pending = await readPendingDecisions(join(projectPath, sliceDesignRel));
+      if (pending.length === 0) return [];
+      const listed = pending.map((d) => `${d.heading} (line ${d.line})`).join('; ');
+      return [{
+        rule: PENDING_DECISION_RULE,
+        severity: 'warning',
+        location: sliceDesignRel,
+        description: `Slice ${sliceIndex} design has ${pending.length} decision${pending.length !== 1 ? 's' : ''} pending PM confirmation: ${listed}`,
+        suggestedFix: `Resolve each with the PM and set its status line to decided in ${sliceDesignRel}`,
+        fixable: false,
+      }];
+    } catch (err) {
+      // Per-slice catch so one unreadable design degrades to a finding and the run continues;
+      // the same reason safeEvaluateGate catches. The read error itself is reported, not dropped.
+      const message = err instanceof Error ? err.message : String(err);
+      return [{
+        rule: PENDING_DECISION_RULE,
+        severity: 'error',
+        location: sliceDesignRel,
+        description: `Failed to read ${sliceDesignRel} for pending decisions: ${message}`,
+        suggestedFix: `Make ${sliceDesignRel} readable and re-run the check`,
+        fixable: false,
+      }];
+    }
+  }
+
+  /**
+   * Wraps a single evaluateReviewGate() call so a throw (e.g. malformed review-gate
+   * frontmatter) degrades to one error-severity finding instead of aborting the whole
+   * check/checkAll run. Follows the safe*() convention used elsewhere in this class.
+   */
+  private async safeEvaluateGate(
+    projectPath: string,
+    index: number,
+    boundary: Boundary,
+    resolvedGate: ResolvedGate,
+    fallbackLocation: string,
+    planEntry: SlicePlanEntry | null = null,
+  ): Promise<{ gate: GateResult | null; errorFinding: ConsistencyFinding | null }> {
+    try {
+      // A plan entry may be retroactive (skipped, D3); an architecture has no entry.
+      const gate = planEntry
+        ? await evaluateEntryGate(projectPath, planEntry, boundary, this.config!, resolvedGate)
+        : await evaluateReviewGate(projectPath, index, boundary, this.config!, resolvedGate);
+      return { gate, errorFinding: null };
+    } catch (err) {
+      const reviewType = positionToReviewType(boundary);
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        gate: null,
+        errorFinding: {
+          rule: 'review-gate',
+          severity: 'error',
+          location: fallbackLocation,
+          description: `Failed to evaluate the ${reviewType} review gate for ${index}: ${message}`,
+          suggestedFix: `Fix the frontmatter for ${index} and re-run the check`,
+          fixable: false,
+        },
+      };
+    }
+  }
+
+  /**
+   * Builds the pending-review/review-failed finding for a resolved (non-null, non-error)
+   * gate evaluation. Shared by ruleReviewGate (slice boundaries) and ruleArchReviewGate
+   * (arch boundary) — they differ only in entity label and pending-review location.
+   */
+  private buildGateFinding(
+    result: GateEvaluation,
+    boundary: Boundary,
+    entityLabel: string,
+    index: number,
+    projectPath: string,
+    pendingLocation: string,
+  ): ConsistencyFinding {
+    const reviewType = positionToReviewType(boundary);
+    if (result.status === 'pending-review') {
+      return {
+        rule: 'review-gate',
+        severity: 'warning',
+        location: pendingLocation,
+        description: result.rationale,
+        suggestedFix: `Run the ${reviewType} review for ${entityLabel} ${index}`,
+        fixable: false,
+      };
+    }
+    return {
+      rule: 'review-gate',
+      severity: 'error',
+      location: join(projectPath, result.artifactPath!),
+      description: result.rationale,
+      suggestedFix: `Resolve the review findings or rerun the ${reviewType} review for ${entityLabel} ${index}`,
+      fixable: false,
+    };
+  }
+
+  /** Rule: slice marked complete in the plan but its code review is absent or failing. */
+  private async ruleReviewGate(
+    planEntry: SlicePlanEntry | null,
+    sliceIndex: number,
+    projectPath: string,
+    slicePlanPath: string | null,
+    resolvedGate: ResolvedGate | null,
+    docs: { taskFile: string[] | null; sliceDesign: string | null } | null,
+  ): Promise<ConsistencyFinding[]> {
+    if (!this.config || resolvedGate === null) return [];
+    if (slicePlanPath === null) return [];
+
+    const findings: ConsistencyFinding[] = [];
+    // Exemptions and weak clears are reported only while the slice is in flight (TD-5).
+    const inFlight = planEntry !== null && !planEntry.isChecked;
+    let exemptReason: ExemptReason | null = null;
+
+    const boundaries: { boundary: Boundary; guard: boolean }[] = [
+      { boundary: 'preTasks', guard: docs?.sliceDesign !== null && docs?.sliceDesign !== undefined },
+      { boundary: 'preImplementation', guard: !!docs?.taskFile && docs.taskFile.length > 0 },
+      // Note: preAdvance runs only for a checked entry, so it never reaches the inFlight
+      // weak-clear branch below. Code-review weak clears are deliberately not reported
+      // (TD-5: incomplete plan entries only). Loosening this guard changes that.
+      {
+        boundary: 'preAdvance',
+        guard: !!planEntry?.isChecked && docs?.sliceDesign !== null && docs?.sliceDesign !== undefined,
+      },
+    ];
+
+    for (const { boundary, guard } of boundaries) {
+      if (!guard) continue;
+
+      const { gate: result, errorFinding } = await this.safeEvaluateGate(
+        projectPath, sliceIndex, boundary, resolvedGate, slicePlanPath, planEntry,
+      );
+      if (errorFinding) {
+        findings.push(errorFinding);
+        continue;
+      }
+      if (result?.status === 'exempt' && result.reason === EXEMPT_REASON.ReviewNone) {
+        exemptReason = result.reason;
+      } else if (result?.status === 'clears' && inFlight) {
+        findings.push(...this.buildWeakClearFindings(result.weakParts, projectPath));
+      }
+      if (!isBlockingGate(result)) continue;
+
+      findings.push(
+        this.buildGateFinding(result, boundary, 'slice', sliceIndex, projectPath, slicePlanPath),
+      );
+    }
+
+    // One finding per exempt slice, not per boundary: exemption is a property of the slice.
+    if (exemptReason !== null && inFlight && docs?.sliceDesign) {
+      findings.push({
+        rule: 'review-gate',
+        severity: 'info',
+        location: join(projectPath, docs.sliceDesign),
+        description: `Slice ${sliceIndex} is review-exempt (${EXEMPT_NOTE[exemptReason]}) — slice, tasks, and code review gates are skipped. Confirm this is intended.`,
+        suggestedFix: 'If reviews are owed, remove review: none from the slice design frontmatter',
+        fixable: false,
+      });
+    }
+
+    return findings;
+  }
+
+  /**
+   * One info finding per review part that cleared on weak provenance (TD-5). Uses the
+   * evidence the gate already parsed, so no second read of the review.
+   */
+  private buildWeakClearFindings(weakParts: WeakPart[], projectPath: string): ConsistencyFinding[] {
+    return weakParts.map((part) => ({
+      rule: 'review-gate',
+      severity: 'info',
+      location: join(projectPath, part.path),
+      description: `Review ${part.path} cleared on weak provenance (${part.evidence}). Set ${WEAK_PASS_KEY} to block such verdicts.`,
+      suggestedFix: `Rerun the review for a stated verdict, or set ${WEAK_PASS_KEY} to concerns or fail`,
+      fixable: false,
+    }));
   }
 
   // --- Aggregate Rules (checkAll only) ---
@@ -500,25 +811,31 @@ export class ConsistencyChecker {
     slicePlanPath: string,
   ): ConsistencyFinding[] {
     const findings: ConsistencyFinding[] = [];
-    const indexMap = new Map<number, string[]>();
+    const indexMap = new Map<number, SlicePlanEntry[]>();
 
     for (const entry of entries) {
-      const names = indexMap.get(entry.index) ?? [];
-      names.push(entry.name);
-      indexMap.set(entry.index, names);
+      const group = indexMap.get(entry.index) ?? [];
+      group.push(entry);
+      indexMap.set(entry.index, group);
     }
 
-    for (const [index, names] of indexMap) {
-      if (names.length > 1) {
-        findings.push({
-          rule: 'duplicate-index',
-          severity: 'error',
-          location: slicePlanPath,
-          description: `Duplicate slice index ${index}: '${names.join("' and '")}'`,
-          suggestedFix: 'Renumber one of the entries',
-          fixable: false,
-        });
-      }
+    for (const [index, group] of indexMap) {
+      if (group.length < 2) continue;
+      const explicit = group.filter((e) => e.indexSource === 'explicit').map((e) => e.name);
+      const fallback = group.filter((e) => e.indexSource === 'fallback').map((e) => e.name);
+      // Mixed sources (#67): an unindexed entry was auto-numbered into a real index.
+      // All-fallback can't occur within one file (the fallback counter is monotonic).
+      const mixed = explicit.length > 0 && fallback.length > 0;
+      findings.push({
+        rule: 'duplicate-index',
+        severity: 'error',
+        location: slicePlanPath,
+        description: mixed
+          ? `Slice index ${index}: '(${index}) ${explicit.join("' and '")}' collides with auto-numbered unindexed entry '${fallback.join("' and '")}'`
+          : `Duplicate slice index ${index}: '${group.map((e) => e.name).join("' and '")}'`,
+        suggestedFix: mixed ? 'Give the unindexed entry an explicit (NNN) index' : 'Renumber one of the entries',
+        fixable: false,
+      });
     }
 
     return findings;
@@ -541,58 +858,89 @@ export class ConsistencyChecker {
     if (!planFrontmatter.found) return findings;
 
     const allComplete = slicePlanResult.completedSlices === slicePlanResult.totalSlices;
+    const planIndex = ConsistencyChecker.extractFileIndex(slicePlanPath);
 
-    // Rule 9: Missing status field — infer from entry completion
-    if (!planFrontmatter.data.status) {
-      const inferredStatus = allComplete && slicePlanResult.totalSlices > 0 ? 'complete' : 'in-progress';
-      findings.push({
-        rule: 'missing-plan-status',
-        severity: 'warning',
-        location: slicePlanPath,
-        description: `Slice plan frontmatter has no "status" field (inferred: "${inferredStatus}")`,
-        suggestedFix: `Add status: ${inferredStatus} to slice plan frontmatter`,
-        fixable: true,
-        fixAction: {
-          type: 'update-frontmatter',
-          filePath: slicePlanPath,
-          detail: { key: 'status', value: inferredStatus },
-        },
-      });
-      return findings;
-    }
+    // Missing status is now handled by Rule 12 (frontmatter-schema)
+    if (!planFrontmatter.data.status) return findings;
 
-    const planStatus = planFrontmatter.data.status.toLowerCase();
+    // Lenient read: on-disk documents may carry any historical spelling
+    const planStatus = normalizeStatus(planFrontmatter.data.status);
 
-    if (planStatus === 'complete' && !allComplete) {
+    if (planStatus === STATUS.Complete && !allComplete) {
       findings.push({
         rule: 'plan-status-vs-entries',
         severity: 'warning',
         location: slicePlanPath,
         description: `Plan status is "complete" but only ${slicePlanResult.completedSlices}/${slicePlanResult.totalSlices} entries are checked`,
-        suggestedFix: 'Update plan frontmatter status to "in-progress"',
+        suggestedFix: 'Update plan frontmatter status to "in_progress"',
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: slicePlanPath,
-          detail: { key: 'status', value: 'in-progress' },
+          detail: { key: 'status', value: STATUS.InProgress },
+          subjectIndex: planIndex,
         },
       });
     }
 
-    if (planStatus !== 'complete' && allComplete && slicePlanResult.totalSlices > 0) {
+    if (planStatus !== STATUS.Complete && allComplete && slicePlanResult.totalSlices > 0) {
       findings.push({
         rule: 'plan-status-vs-entries',
         severity: 'warning',
         location: slicePlanPath,
-        description: `All ${slicePlanResult.totalSlices} entries are checked but plan status is "${planStatus}"`,
+        description: `All ${slicePlanResult.totalSlices} entries are checked but plan status is "${planFrontmatter.data.status}"`,
         suggestedFix: 'Update plan frontmatter status to "complete"',
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: slicePlanPath,
-          detail: { key: 'status', value: 'complete' },
+          detail: { key: 'status', value: STATUS.Complete },
+          subjectIndex: planIndex,
         },
       });
+    }
+
+    return findings;
+  }
+
+  /**
+   * Rule 9: pre-slice-plan (arch) review gate — checkAll() only. The arch boundary
+   * is keyed by arch index, not slice index, so it doesn't belong in per-slice
+   * ruleReviewGate(); it audits every discovered architecture file the same way
+   * ruleArchStatusVsPlans does.
+   */
+  private async ruleArchReviewGate(
+    project: ProjectData,
+    projectPath: string,
+    resolvedGate: ResolvedGate | null,
+  ): Promise<ConsistencyFinding[]> {
+    if (!this.config || resolvedGate === null) return [];
+
+    const archFiles = await this.discoverAllArchFiles(projectPath);
+    const allArchPaths = new Set(archFiles);
+    if (project.fileArch) {
+      const configuredArchRel = resolveArtifactPath('fileArch', project.fileArch);
+      if (configuredArchRel) allArchPaths.add(join(projectPath, configuredArchRel));
+    }
+
+    const findings: ConsistencyFinding[] = [];
+
+    for (const archPath of allArchPaths) {
+      const archIndex = ConsistencyChecker.extractFileIndex(archPath);
+      if (archIndex === null) continue;
+
+      const { gate: result, errorFinding } = await this.safeEvaluateGate(
+        projectPath, archIndex, 'preSlicePlan', resolvedGate, archPath,
+      );
+      if (errorFinding) {
+        findings.push(errorFinding);
+        continue;
+      }
+      if (!isBlockingGate(result)) continue;
+
+      findings.push(
+        this.buildGateFinding(result, 'preSlicePlan', 'architecture', archIndex, projectPath, archPath),
+      );
     }
 
     return findings;
@@ -614,37 +962,42 @@ export class ConsistencyChecker {
 
     if (!archFrontmatter.found || !archFrontmatter.data.status) return findings;
 
-    const archStatus = archFrontmatter.data.status.toLowerCase();
+    // Lenient read: on-disk documents may carry any historical spelling
+    const archStatus = normalizeStatus(archFrontmatter.data.status);
     const allComplete = slicePlanResult.completedSlices === slicePlanResult.totalSlices;
+    const archIndex = ConsistencyChecker.extractFileIndex(archPath);
+    const archLabel = archIndex !== null ? `Architecture (${archIndex})` : `Architecture (${archPath.split('/').pop()})`;
 
-    if (archStatus === 'complete' && !allComplete) {
+    if (archStatus === STATUS.Complete && !allComplete) {
       findings.push({
         rule: 'arch-status-vs-plans',
         severity: 'warning',
         location: archPath,
-        description: `Architecture status is "complete" but plan has unchecked entries (${slicePlanResult.completedSlices}/${slicePlanResult.totalSlices})`,
-        suggestedFix: 'Update architecture frontmatter status to "in-progress"',
+        description: `${archLabel} status is "complete" but plan has unchecked entries (${slicePlanResult.completedSlices}/${slicePlanResult.totalSlices})`,
+        suggestedFix: `Update ${archLabel} frontmatter status to "in_progress"`,
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: archPath,
-          detail: { key: 'status', value: 'in-progress' },
+          detail: { key: 'status', value: STATUS.InProgress },
+          subjectIndex: archIndex,
         },
       });
     }
 
-    if (archStatus !== 'complete' && allComplete && slicePlanResult.totalSlices > 0) {
+    if (archStatus !== STATUS.Complete && allComplete && slicePlanResult.totalSlices > 0) {
       findings.push({
         rule: 'arch-status-vs-plans',
         severity: 'warning',
         location: archPath,
-        description: `All ${slicePlanResult.totalSlices} plan entries are checked but architecture status is "${archStatus}"`,
-        suggestedFix: 'Update architecture frontmatter status to "complete"',
+        description: `All ${slicePlanResult.totalSlices} plan entries are checked but ${archLabel} status is "${archFrontmatter.data.status}"`,
+        suggestedFix: `Update ${archLabel} frontmatter status to "complete"`,
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
           filePath: archPath,
-          detail: { key: 'status', value: 'complete' },
+          detail: { key: 'status', value: STATUS.Complete },
+          subjectIndex: archIndex,
         },
       });
     }
@@ -652,46 +1005,164 @@ export class ConsistencyChecker {
     return findings;
   }
 
-  /** Rule 11: Architecture file missing status frontmatter field */
-  private async ruleArchMissingStatus(
-    archPath: string,
-    planResult: SlicePlanResult | null,
+
+  /** Find the initiative plan file for a project. Delegates to shared utility. */
+  private async findInitiativePlan(projectPath: string): Promise<string | null> {
+    return resolveInitiativePlanPath(projectPath);
+  }
+
+  /** Rule 13: Initiative plan entry checkbox vs. arch doc status */
+  private async ruleInitiativeEntryVsArch(
+    initiativePlanPath: string,
+    initiativePlanResult: SlicePlanResult,
+    projectPath: string,
   ): Promise<ConsistencyFinding[]> {
-    let archFrontmatter: FrontmatterResult;
+    const findings: ConsistencyFinding[] = [];
+
+    // Build index → arch file map
+    const archFiles = await this.discoverAllArchFiles(projectPath);
+    const archByIndex = new Map<number, string>();
+    for (const archPath of archFiles) {
+      const idx = ConsistencyChecker.extractFileIndex(archPath);
+      if (idx !== null) archByIndex.set(idx, archPath);
+    }
+
+    for (const entry of initiativePlanResult.entries) {
+      const archPath = archByIndex.get(entry.index);
+      if (!archPath) continue;
+
+      let archFrontmatter: FrontmatterResult;
+      try {
+        archFrontmatter = await this.introspector.parseFrontmatter(archPath);
+      } catch {
+        continue;
+      }
+
+      if (!archFrontmatter.found || !archFrontmatter.data.status) continue;
+
+      // Lenient read: on-disk documents may carry any historical spelling
+      const archStatus = normalizeStatus(archFrontmatter.data.status);
+      const archComplete = archStatus === STATUS.Complete;
+
+      if (archComplete && !entry.isChecked) {
+        findings.push({
+          rule: 'initiative-entry-vs-arch',
+          severity: 'warning',
+          location: initiativePlanPath,
+          description: `Architecture (${entry.index}) is complete but initiative plan entry "${entry.name}" is unchecked`,
+          suggestedFix: `Check the initiative plan entry for (${entry.index})`,
+          fixable: true,
+          fixAction: {
+            type: 'update-checkbox',
+            filePath: initiativePlanPath,
+            detail: { lineIndex: entry.lineIndex, checked: true, entryIndex: entry.index },
+            subjectIndex: entry.index,
+          },
+        });
+      }
+
+      if (entry.isChecked && !archComplete) {
+        findings.push({
+          rule: 'initiative-entry-vs-arch',
+          severity: 'warning',
+          location: archPath,
+          description: `Initiative plan entry "${entry.name}" (${entry.index}) is checked but architecture status is "${archFrontmatter.data.status}"`,
+          suggestedFix: 'Update architecture frontmatter status to "complete"',
+          fixable: true,
+          fixAction: {
+            type: 'update-frontmatter',
+            filePath: archPath,
+            detail: { key: 'status', value: STATUS.Complete },
+            subjectIndex: entry.index,
+          },
+        });
+      }
+
+      // Check that the associated slice plan is fully complete before the initiative entry is checked
+      if (entry.isChecked) {
+        const slicePlans = await this.discoverAllSlicePlans(projectPath);
+        const slicePlanPath = slicePlans.find((p) => {
+          const base = p.split('/').pop() ?? '';
+          return new RegExp(`^${entry.index}-slices\\.`).test(base);
+        });
+        if (slicePlanPath) {
+          const slicePlan = await this.introspector.parseSlicePlan(slicePlanPath);
+          const incomplete = slicePlan.totalSlices - slicePlan.completedSlices;
+          if (incomplete > 0) {
+            findings.push({
+              rule: 'initiative-entry-vs-arch',
+              severity: 'warning',
+              location: initiativePlanPath,
+              description: `Initiative plan entry "${entry.name}" (${entry.index}) is checked but slice plan has ${incomplete} incomplete slice${incomplete !== 1 ? 's' : ''}`,
+              suggestedFix: `Uncheck the initiative entry or complete the remaining ${incomplete} slice${incomplete !== 1 ? 's' : ''}`,
+              fixable: false,
+            });
+          }
+        }
+      }
+    }
+
+    return findings;
+  }
+
+  /** Rule 14: Initiative plan frontmatter status vs. all entries checked */
+  private async ruleInitiativePlanStatusVsEntries(
+    initiativePlanPath: string,
+    initiativePlanResult: SlicePlanResult,
+  ): Promise<ConsistencyFinding[]> {
+    const findings: ConsistencyFinding[] = [];
+
+    let planFrontmatter: FrontmatterResult;
     try {
-      archFrontmatter = await this.introspector.parseFrontmatter(archPath);
+      planFrontmatter = await this.introspector.parseFrontmatter(initiativePlanPath);
     } catch {
-      return [];
+      return findings;
     }
 
-    if (!archFrontmatter.found || archFrontmatter.data.status) return [];
+    if (!planFrontmatter.found || !planFrontmatter.data.status) return findings;
 
-    // Infer status from paired plan if available, otherwise not_started
-    let inferredStatus: string;
-    if (planResult) {
-      const allComplete =
-        planResult.totalSlices > 0 &&
-        planResult.completedSlices === planResult.totalSlices;
-      inferredStatus = allComplete ? 'complete' : 'in-progress';
-    } else {
-      inferredStatus = 'not_started';
-    }
+    // Lenient read: on-disk documents may carry any historical spelling
+    const planStatus = normalizeStatus(planFrontmatter.data.status);
+    const initiativeIndex = ConsistencyChecker.extractFileIndex(initiativePlanPath);
+    const allComplete =
+      initiativePlanResult.totalSlices > 0 &&
+      initiativePlanResult.completedSlices === initiativePlanResult.totalSlices;
 
-    return [
-      {
-        rule: 'missing-arch-status',
+    if (planStatus === STATUS.Complete && !allComplete) {
+      findings.push({
+        rule: 'initiative-plan-status-vs-entries',
         severity: 'warning',
-        location: archPath,
-        description: `Architecture file has no "status" frontmatter field (inferred: "${inferredStatus}")`,
-        suggestedFix: `Add status: ${inferredStatus} to architecture frontmatter`,
+        location: initiativePlanPath,
+        description: `Initiative plan status is "complete" but only ${initiativePlanResult.completedSlices}/${initiativePlanResult.totalSlices} entries are checked`,
+        suggestedFix: 'Update initiative plan frontmatter status to "in_progress"',
         fixable: true,
         fixAction: {
           type: 'update-frontmatter',
-          filePath: archPath,
-          detail: { key: 'status', value: inferredStatus },
+          filePath: initiativePlanPath,
+          detail: { key: 'status', value: STATUS.InProgress },
+          subjectIndex: initiativeIndex,
         },
-      },
-    ];
+      });
+    }
+
+    if (planStatus !== STATUS.Complete && allComplete) {
+      findings.push({
+        rule: 'initiative-plan-status-vs-entries',
+        severity: 'warning',
+        location: initiativePlanPath,
+        description: `All ${initiativePlanResult.totalSlices} initiative entries are checked but plan status is "${planFrontmatter.data.status}"`,
+        suggestedFix: 'Update initiative plan frontmatter status to "complete"',
+        fixable: true,
+        fixAction: {
+          type: 'update-frontmatter',
+          filePath: initiativePlanPath,
+          detail: { key: 'status', value: STATUS.Complete },
+          subjectIndex: initiativeIndex,
+        },
+      });
+    }
+
+    return findings;
   }
 
   /** Rule 10: Stale worktree paths — worktree path missing or not a git worktree */
@@ -740,6 +1211,107 @@ export class ConsistencyChecker {
           suggestedFix: `Run 'cf worktree update "${wt.name}" --path <new-path>' or 'cf worktree rm "${wt.name}"'`,
           fixable: false,
         });
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Rule 15: personal-scope config keys present in the shared project file.
+   * Detects the pre-migration case (a personal key committed to
+   * .context-forge.toml before this classification existed, or set there by
+   * an older/buggy scope-resolution path). Not fixable here by design — the
+   * fix is a cross-file move (`cf config migrate-personal`), which doesn't
+   * fit the update-checkbox/update-frontmatter fixAction shape.
+   */
+  private async rulePersonalConfigInSharedFile(projectPath: string): Promise<ConsistencyFinding[]> {
+    if (!this.config) return [];
+
+    const findings: ConsistencyFinding[] = [];
+    const sharedPath = getProjectConfigPath(projectPath);
+    const personalPath = getProjectPersonalConfigPath(projectPath);
+
+    for (const [key, def] of Object.entries(CONFIG_KEYS)) {
+      if (def.scope !== ConfigScope.Personal) continue;
+
+      const { shared } = await this.config.getRawProjectFileValues(key);
+      if (shared === undefined) continue;
+
+      findings.push({
+        rule: 'personal-config-in-shared-file',
+        severity: 'warning',
+        location: sharedPath,
+        description: `Personal-scope key "${key}" is present in the shared config file (${sharedPath}); it belongs in the personal config file (${personalPath})`,
+        suggestedFix: 'Run cf config migrate-personal to move it to the personal config file',
+        fixable: false,
+      });
+    }
+
+    return findings;
+  }
+
+  /**
+   * Rule 16: DEVLOG.md larger than devlog.max_bytes. A thin caller of the
+   * finding builder; like Rule 15 it needs a ConfigManager for the limits.
+   */
+  private async ruleDevlogSize(projectPath: string, projectName: string): Promise<ConsistencyFinding[]> {
+    return this.config ? devlogSizeFindings(this.config, projectPath, projectName) : [];
+  }
+
+  // --- Document-wide rules ---
+
+  /**
+   * Rule 12: Validate frontmatter against per-docType schema.
+   *
+   * Discovery (DOC_SCAN_DIRS / discoverAllDocuments) is shared with the
+   * standalone `validateFrontmatterFiles` service (`cf validate frontmatter`).
+   * Per-file parsing here goes through the injected `IArtifactIntrospector`
+   * rather than calling into the service directly, so this rule stays
+   * testable via dependency injection like every other rule in this class;
+   * `ArtifactIntrospector.parseFrontmatter` is a pass-through to the same
+   * underlying `frontmatterParser` the service uses, so results are
+   * identical in production.
+   */
+  private async ruleFrontmatterSchema(projectPath: string, projectName?: string): Promise<ConsistencyFinding[]> {
+    const findings: ConsistencyFinding[] = [];
+    const documents = await discoverAllDocuments(projectPath);
+
+    for (const docPath of documents) {
+      let fm;
+      try {
+        fm = await this.introspector.parseFrontmatter(docPath);
+      } catch {
+        continue;
+      }
+
+      if (!fm.found) continue;
+
+      const schemaFindings = validateFrontmatter(docPath, fm.data, { projectName });
+      const relPath = relative(projectPath, docPath);
+
+      for (const sf of schemaFindings) {
+        const finding: ConsistencyFinding = {
+          rule: sf.rule,
+          severity: sf.severity,
+          location: docPath,
+          description: `${relPath}: ${sf.description}`,
+          suggestedFix: sf.fixAction
+            ? `Add ${sf.fixAction.field}: ${sf.fixAction.value} to frontmatter`
+            : `Add the missing field to frontmatter`,
+          fixable: !!sf.fixAction,
+        };
+
+        if (sf.fixAction) {
+          finding.fixAction = {
+            type: sf.fixAction.type as 'update-frontmatter',
+            filePath: docPath,
+            detail: { key: sf.fixAction.field, value: sf.fixAction.value },
+            subjectIndex: ConsistencyChecker.extractFileIndex(docPath),
+          };
+        }
+
+        findings.push(finding);
       }
     }
 

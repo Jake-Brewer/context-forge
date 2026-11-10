@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectDocuments, checkFileExists } from '../../src/introspection/parsers/documentDetector.js';
 
@@ -43,6 +45,215 @@ describe('detectDocuments', () => {
     expect(result.taskFile).toBeNull();
     expect(result.architecture).toBeNull();
     expect(result.slicePlan).toBeNull();
+  });
+
+  describe('zero-padded index matching (slice 913 TD-6)', () => {
+    it('matches a zero-padded filename (050-arch.*.md) when queried by its numeric index (50)', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 50);
+      expect(result.architecture).toBe('project-documents/user/architecture/050-arch.hld-test-project.md');
+    });
+
+    it('still matches a non-padded filename (100-arch.*.md) when queried by its numeric index (100) — no regression', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 100);
+      expect(result.architecture).toBe('project-documents/user/architecture/100-arch.test-system.md');
+    });
+
+    it('does not match a near-miss index sharing a numeric prefix (140 vs 1400)', async () => {
+      // Guards the existing suffix-boundary behavior: an index of 140 must not
+      // match a 1400-arch.*.md file just because "1400" starts with "140".
+      const root = mkdtempSync(join(tmpdir(), 'document-detector-nearmiss-'));
+      const archDir = join(root, 'project-documents', 'user', 'architecture');
+      mkdirSync(archDir, { recursive: true });
+      writeFileSync(join(archDir, '1400-arch.decoy.md'), '---\narch: decoy\n---\n');
+
+      const result = await detectDocuments(root, 140);
+      expect(result.architecture).toBeNull();
+    });
+  });
+
+  it('returns review: null for existing two-arg callers (unaffected by reviewType)', async () => {
+    const result = await detectDocuments(PROJECT_ROOT, 100);
+    expect(result.review).toBeNull();
+  });
+
+  describe('review detection (reviewType)', () => {
+    it('returns null when reviewType is omitted, even when matching review files exist', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 100);
+      expect(result.review).toBeNull();
+    });
+
+    it('returns null when reviewType is an empty string (per-gate override default), even when matching review files exist', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 100, '');
+      expect(result.review).toBeNull();
+    });
+
+    it('returns the single match when exactly one review exists for a type', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 100, 'arch');
+      expect(result.review).toBe(
+        'project-documents/user/reviews/100-review.arch.only-pass.md',
+      );
+    });
+
+    it('returns the lexicographically last match when multiple reviews exist for a type', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 100, 'code');
+      expect(result.review).toBe(
+        'project-documents/user/reviews/100-review.code.second-pass.md',
+      );
+    });
+
+    it('returns null for a non-matching reviewType', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 100, 'tasks');
+      expect(result.review).toBeNull();
+    });
+
+    it('returns null for a non-matching index', async () => {
+      const result = await detectDocuments(PROJECT_ROOT, 999, 'code');
+      expect(result.review).toBeNull();
+    });
+
+    it('returns null when the reviews directory is missing', async () => {
+      const result = await detectDocuments('/nonexistent/project', 100, 'code');
+      expect(result.review).toBeNull();
+    });
+  });
+
+  describe('review docType filtering (#90 — same-prefix sibling shadowing)', () => {
+    let root: string;
+    let reviewsDir: string;
+
+    function setup(): void {
+      root = mkdtempSync(join(tmpdir(), 'document-detector-doctype-'));
+      reviewsDir = join(root, 'project-documents', 'user', 'reviews');
+      mkdirSync(reviewsDir, { recursive: true });
+    }
+
+    function teardown(): void {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    it('excludes a same-prefix sibling with a different declared docType, even when it sorts last', async () => {
+      setup();
+      try {
+        // Reproduces the reported case: 382-review.code.review-a-pr.md (the
+        // real review, no verdict issue) plus a
+        // ...response.md sibling that sorts after it and shadows it under
+        // the old "lexicographically last wins" rule.
+        writeFileSync(
+          join(reviewsDir, '382-review.code.review-a-pr.md'),
+          '---\ndocType: review\nverdict: CONCERNS\n---\n\n# Real review\n',
+        );
+        writeFileSync(
+          join(reviewsDir, '382-review.code.review-a-pr.response.md'),
+          '---\ndocType: review-response\n---\n\n# Response, not a review\n',
+        );
+
+        const result = await detectDocuments(root, 382, 'code');
+        expect(result.review).toBe(
+          'project-documents/user/reviews/382-review.code.review-a-pr.md',
+        );
+      } finally {
+        teardown();
+      }
+    });
+
+    it('still picks the lexicographically last match among same-typed (or untyped) candidates', async () => {
+      setup();
+      try {
+        writeFileSync(
+          join(reviewsDir, '500-review.code.first-pass.md'),
+          '---\ndocType: review\nverdict: FAIL\n---\n\n# First pass\n',
+        );
+        writeFileSync(
+          join(reviewsDir, '500-review.code.second-pass.md'),
+          '---\ndocType: review\nverdict: PASS\n---\n\n# Second pass\n',
+        );
+
+        const result = await detectDocuments(root, 500, 'code');
+        expect(result.review).toBe(
+          'project-documents/user/reviews/500-review.code.second-pass.md',
+        );
+      } finally {
+        teardown();
+      }
+    });
+
+    it('keeps a candidate with no docType field at all (predates the convention)', async () => {
+      setup();
+      try {
+        writeFileSync(
+          join(reviewsDir, '600-review.code.first.md'),
+          '---\nverdict: CONCERNS\n---\n\n# No docType field\n',
+        );
+
+        const result = await detectDocuments(root, 600, 'code');
+        expect(result.review).toBe(
+          'project-documents/user/reviews/600-review.code.first.md',
+        );
+      } finally {
+        teardown();
+      }
+    });
+
+    it('returns null when every same-prefix candidate has a different declared docType', async () => {
+      setup();
+      try {
+        writeFileSync(
+          join(reviewsDir, '700-review.code.only.md'),
+          '---\ndocType: devlog\n---\n\n# Not actually a review\n',
+        );
+
+        const result = await detectDocuments(root, 700, 'code');
+        expect(result.review).toBeNull();
+      } finally {
+        teardown();
+      }
+    });
+  });
+});
+
+describe('split review parts (#106)', () => {
+  const REVIEWS = 'project-documents/user/reviews';
+
+  function makeRoot(files: string[]): string {
+    const root = mkdtempSync(join(tmpdir(), 'document-detector-parts-'));
+    mkdirSync(join(root, REVIEWS), { recursive: true });
+    for (const name of files) {
+      writeFileSync(join(root, REVIEWS, name), '---\ndocType: review\nverdict: PASS\n---\n');
+    }
+    return root;
+  }
+
+  it('orders parts numerically, so part-10 follows part-2', async () => {
+    const names = [1, 2, 10].map((n) => `914-review.tasks.big.part-${n}.md`);
+    const root = makeRoot([names[2], names[0], names[1]]);
+    try {
+      const result = await detectDocuments(root, 914, 'tasks');
+      expect(result.reviewParts).toEqual(names.map((n) => join(REVIEWS, n)));
+      expect(result.review).toBe(join(REVIEWS, names[2]));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves reviewParts empty for a single unsuffixed review', async () => {
+    const root = makeRoot(['914-review.tasks.big.md']);
+    try {
+      const result = await detectDocuments(root, 914, 'tasks');
+      expect(result.reviewParts).toEqual([]);
+      expect(result.review).toBe(join(REVIEWS, '914-review.tasks.big.md'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a leftover unsuffixed review when parts exist', async () => {
+    const root = makeRoot(['914-review.tasks.big.md', '914-review.tasks.big.part-1.md']);
+    try {
+      const result = await detectDocuments(root, 914, 'tasks');
+      expect(result.reviewParts).toEqual([join(REVIEWS, '914-review.tasks.big.part-1.md')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

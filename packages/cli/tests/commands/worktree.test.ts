@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { RangeRestoreSkipReason } from '@context-forge/core';
 import { Command } from 'commander';
 import { registerWorktreeCommand } from '../../src/commands/worktree.js';
 
@@ -195,6 +196,33 @@ describe('cf worktree list', () => {
     const program = createProgram();
     await program.parseAsync(['node', 'cf', 'worktree', 'list']);
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Feature A'));
+  });
+
+  describe('(default) tag', () => {
+    const tagged = (name: string) => ({ ...sampleWorktree, id: `wt_${name}`, name, isDefault: true });
+    const plain = { ...sampleWorktree, id: 'wt_plain', name: 'Plain', isDefault: false };
+
+    async function listOutput(worktrees: unknown[]): Promise<string> {
+      mockGetById.mockResolvedValue({ ...baseProject, worktrees });
+      await createProgram().parseAsync(['node', 'cf', 'worktree', 'list']);
+      return vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n');
+    }
+
+    it('tags the default row, not the others', async () => {
+      const output = await listOutput([tagged('main-line'), plain]);
+      expect(output).toMatch(/main-line\S* \S*\(default\)/);
+      expect(output.match(/\(default\)/g)).toHaveLength(1);
+    });
+
+    it('tags both rows when two are marked', async () => {
+      const output = await listOutput([tagged('one'), tagged('two')]);
+      expect(output.match(/\(default\)/g)).toHaveLength(2);
+    });
+
+    it('tags none when none is marked, even if a worktree is named default', async () => {
+      const output = await listOutput([plain, { ...plain, id: 'wt_label', name: 'default' }]);
+      expect(output).not.toContain('(default)');
+    });
   });
 
   it('marks active worktree with * prefix in output', async () => {
@@ -415,6 +443,44 @@ describe('cf worktree rm', () => {
     await program.parseAsync(['node', 'cf', 'worktree', 'rm', 'Feature A']);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
     expect(console.log).toHaveBeenCalledWith('Cancelled.');
+  });
+
+  it('says where the range went when it was handed back to the default worktree', async () => {
+    vi.mocked(findWorktreeByNameOrId).mockResolvedValue(sampleWorktree);
+    mockRemoveWorktree.mockResolvedValue({
+      removed: sampleWorktree,
+      migrated: false,
+      restoredRange: [100, 799],
+      defaultWorktree: { id: 'wt_main', name: 'main-line' },
+    });
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'worktree', 'rm', 'Feature A', '--yes']);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("default worktree 'main-line', now 100-799"));
+  });
+
+  it('says why the default kept its range, with the manual fix', async () => {
+    vi.mocked(findWorktreeByNameOrId).mockResolvedValue(sampleWorktree);
+    mockRemoveWorktree.mockResolvedValue({
+      removed: sampleWorktree,
+      migrated: false,
+      rangeNotRestored: { reason: RangeRestoreSkipReason.NotAdjacent, defaultRange: [100, 299] },
+      defaultWorktree: { id: 'wt_main', name: 'main-line' },
+    });
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'worktree', 'rm', 'Feature A', '--yes']);
+    const output = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n');
+    expect(output).toContain("default worktree 'main-line' keeps its range 100-299");
+    expect(output).toContain('does not border it');
+    expect(output).toContain('cf worktree update main-line --range');
+  });
+
+  it('prints no range note when neither outcome is reported', async () => {
+    vi.mocked(findWorktreeByNameOrId).mockResolvedValue(sampleWorktree);
+    const program = createProgram();
+    await program.parseAsync(['node', 'cf', 'worktree', 'rm', 'Feature A', '--yes']);
+    const output = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n');
+    expect(output).not.toContain('went back to the default worktree');
+    expect(output).not.toContain('keeps its range');
   });
 
   it('prints reverse migration notice when migrated is true', async () => {

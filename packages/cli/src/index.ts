@@ -5,13 +5,13 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 import { registerBuildCommand } from './commands/build.js';
 import { registerCheckCommand } from './commands/check.js';
+import { registerDetectCommand } from './commands/detect.js';
 import { registerFutureCommand } from './commands/future.js';
 import { registerNextCommand } from './commands/next.js';
-import { registerProjectCommand, projectSetAction, projectGetAction, projectUnsetAction, buildSettableFieldsHelp } from './commands/project.js';
+import { registerProjectCommand, projectSetAction, resolveSetValue, projectGetAction, projectUnsetAction, buildSettableFieldsHelp } from './commands/project.js';
 import { registerPromptCommand } from './commands/prompt.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerListCommand } from './commands/list.js';
-import { registerWorkflowCommands } from './commands/workflow.js';
 import { registerWorktreeCommand } from './commands/worktree.js';
 import { registerBackupCommand } from './commands/backup.js';
 import { registerConfigCommand } from './commands/config.js';
@@ -19,7 +19,15 @@ import { registerGuidesCommand } from './commands/guides.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerInstallCommandsCommand, registerUninstallCommandsCommand } from './commands/commandInstaller.js';
 import { registerSetupIdeCommand } from './commands/setup-ide.js';
-import { handleError } from './utils/errors.js';
+import { registerRulesCommand } from './commands/rules.js';
+import { registerDocsCommand } from './commands/docs.js';
+import { registerDevlogCommand } from './commands/devlog.js';
+import { registerUpdateCommand } from './commands/update.js';
+import { registerValidateCommand } from './commands/validate.js';
+import { handleError, setJsonMode } from './utils/errors.js';
+import { buildCommandCatalog } from './utils/commandCatalog.js';
+import { BREAKING_CHANGES } from './utils/breaking-changes.js';
+import { withJsonOption, withProjectOption, withProjectLevelOption } from './options.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json') as { version: string };
@@ -28,7 +36,10 @@ const program = new Command();
 
 program
   .name('cf')
-  .version(version)
+  .version(version, '-v, --version', 'Output the version number')
+  // The root --version must not swallow a subcommand's own --version <tag>
+  // (cf guides install|update): root options are honored only before the subcommand.
+  .enablePositionalOptions()
   .description('Context Forge CLI — terminal access to context assembly, project management, and workflow navigation')
   .configureHelp({
     styleTitle: (str) => chalk.bold(str),
@@ -44,20 +55,22 @@ program
 // Workflow commands
 registerBuildCommand(program);
 registerCheckCommand(program);
+registerDetectCommand(program);
 registerFutureCommand(program);
 registerNextCommand(program);
 registerProjectCommand(program);
 registerPromptCommand(program);
 registerStatusCommand(program);
+registerValidateCommand(program);
 
 // Top-level shortcuts for project get/set/unset
-program
+const getCmd = program
   .command('get')
-  .description('Show details for the active project (shortcut for cf project get)')
-  .option('--json', 'Output as JSON')
-  .option('--project <name|id>', 'Project name or ID (overrides default)')
-  .option('--project-level', 'Show project-level fields only (skip worktree overlay)')
-  .action(async (opts: { json?: boolean; project?: string; projectLevel?: boolean }) => {
+  .description('Show details for the active project (shortcut for cf project get)');
+withJsonOption(getCmd);
+withProjectOption(getCmd);
+withProjectLevelOption(getCmd);
+getCmd.action(async (opts: { json?: boolean; project?: string; projectLevel?: boolean }) => {
     try {
       await projectGetAction(opts);
     } catch (err) {
@@ -65,16 +78,15 @@ program
     }
   });
 
-program
+const setCmd = program
   .command('set [field] [value]')
-  .description('Set a field on the active project (shortcut for cf project set)')
-  .option('--project <name|id>', 'Project name or ID (overrides default)')
-  .option('--project-level', 'Force update at project level (skip worktree routing)')
-  .addHelpText('after', buildSettableFieldsHelp)
+  .description('Set a field on the active project (shortcut for cf project set)');
+withProjectOption(setCmd);
+withProjectLevelOption(setCmd);
+setCmd.addHelpText('after', buildSettableFieldsHelp)
   .action(async (field: string | undefined, val: string | undefined, opts: { project?: string; projectLevel?: boolean }) => {
-    // Allow `cf set date` (no value) as shorthand for `cf set date now`
-    const resolvedVal = (!val && field && /^date/i.test(field)) ? 'now' : val;
-    if (!field || !resolvedVal) {
+    const resolvedVal = resolveSetValue(field, val);
+    if (!field || resolvedVal === undefined) {
       console.log(`Usage: cf set [options] <field> <value>  —  run cf set --help for details`);
       return;
     }
@@ -85,12 +97,12 @@ program
     }
   });
 
-program
+const unsetCmd = program
   .command('unset [field]')
-  .description('Unset (clear) a field on the active project (shortcut for cf project unset)')
-  .option('--project <name|id>', 'Project name or ID (overrides default)')
-  .option('--project-level', 'Force unset at project level (skip worktree routing)')
-  .action(async (field: string | undefined, opts: { project?: string; projectLevel?: boolean }) => {
+  .description('Unset (clear) a field on the active project (shortcut for cf project unset)');
+withProjectOption(unsetCmd);
+withProjectLevelOption(unsetCmd);
+unsetCmd.action(async (field: string | undefined, opts: { project?: string; projectLevel?: boolean }) => {
     if (!field) {
       console.log(`Usage: cf unset [options] <field>  —  run cf unset --help for details`);
       return;
@@ -103,7 +115,6 @@ program
   });
 
 // Compound workflow commands
-registerWorkflowCommands(program);
 
 // Artifact listing
 registerListCommand(program);
@@ -119,9 +130,60 @@ registerInitCommand(program);
 registerInstallCommandsCommand(program);
 registerUninstallCommandsCommand(program);
 registerSetupIdeCommand(program);
+registerRulesCommand(program);
+registerDocsCommand(program);
+registerDevlogCommand(program);
+registerUpdateCommand(program);
+
+// Version introspection
+const versionCmd = program
+  .command('version')
+  .description('Show version information (use --json for machine-readable output)');
+withJsonOption(versionCmd);
+versionCmd.action(async (opts: { json?: boolean }) => {
+    if (opts.json) {
+      let guideVersion: string | null = null;
+      try {
+        const { GuideDetector } = await import('@context-forge/core/node');
+        const detector = new GuideDetector();
+        const info = await detector.detect(process.cwd());
+        guideVersion = info.version;
+      } catch {
+        // Guide detection is best-effort
+      }
+      const output = {
+        name: '@context-forge/cli',
+        version,
+        guideVersion,
+        breaking: BREAKING_CHANGES,
+      };
+      process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+    } else {
+      process.stdout.write(`@context-forge/cli v${version}\n`);
+    }
+  });
+
+// Machine-readable help
+const helpCmd = program
+  .command('help')
+  .description('Display help information (use --json for machine-readable catalog)');
+withJsonOption(helpCmd);
+helpCmd.action((opts: { json?: boolean }) => {
+    if (opts.json) {
+      const catalog = buildCommandCatalog(program, version);
+      process.stdout.write(JSON.stringify(catalog, null, 2) + '\n');
+    } else {
+      program.outputHelp();
+    }
+  });
 
 // Catch unhandled errors at top level
 process.on('uncaughtException', handleError);
 process.on('unhandledRejection', handleError);
+
+// Detect --json in argv to enable structured error output before parsing
+if (process.argv.includes('--json') || process.env.CF_JSON === '1') {
+  setJsonMode();
+}
 
 program.parse();

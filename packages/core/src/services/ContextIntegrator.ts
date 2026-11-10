@@ -4,10 +4,51 @@ import { TemplateProcessor } from './TemplateProcessor.js';
 import { ContextTemplateEngine } from './ContextTemplateEngine.js';
 import { ContextProfileParser } from './ContextProfileParser.js';
 import type { ProfileMap } from './ContextProfileParser.js';
-import { PROMPT_FILE_RELATIVE_PATH, STATEMENTS_FILE_RELATIVE_PATH } from './constants.js';
+import type { ListedReferences } from '../adoption/codebaseReference.js';
+import { PROMPT_FILE_RELATIVE_PATH, STATEMENTS_FILE_RELATIVE_PATH, DEFAULT_TARGET_BRANCH, CODEBASE_REFERENCE_VARIABLES } from './constants.js';
+import { getFieldNamesByGroup } from '../schema/projectSchema.js';
 
-/** Artifact fields subject to profile-aware filtering */
-const ARTIFACT_FIELDS = ['fileArch', 'fileSlicePlan', 'fileHLD', 'fileSpec', 'fileSlice', 'fileTasks', 'fileConcept'] as const;
+/**
+ * Finds the slice's task file(s) on disk under a checkout and renders them for
+ * prompts. Returns undefined when none exist.
+ */
+export type TaskFilesResolver = (checkoutPath: string, fileSlice: string) => Promise<string | undefined>;
+
+/**
+ * Reads the configured git.integration_branch for one checkout (the project
+ * root or a worktree's own path). Returns '' when unset.
+ */
+export type IntegrationBranchResolver = (checkoutPath: string) => Promise<string>;
+
+/**
+ * Returns the guide fragment for workflow.permissiveness in one checkout, given
+ * the project's `instruction` value. Returns '' when no fragment applies.
+ */
+export type PermissivenessResolver = (checkoutPath: string, instruction: string) => Promise<string>;
+
+/**
+ * Renders the `### Codebase Reference` section for one checkout, given which of its two
+ * variables the active profile lists. Called only when at least one is listed. Returns the
+ * section text, or '' when there is nothing to show.
+ */
+export type CodebaseReferenceResolver = (
+  checkoutPath: string,
+  projectName: string,
+  fileComprehension: string,
+  listed: ListedReferences,
+) => Promise<string>;
+
+/**
+ * Raised when workflow.permissiveness is set but its fragment cannot be loaded.
+ * generateContextFromProject rethrows it (every other error becomes an error
+ * stub) so the build fails instead of silently dropping the setting.
+ */
+export class PermissivenessFragmentError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'PermissivenessFragmentError';
+  }
+}
 
 /**
  * Default template for context generation
@@ -39,17 +80,33 @@ export class ContextIntegrator {
   private cachedProfiles: ProfileMap | null = null;
   private cachedPromptPath: string | null = null;
   private readFileFn: ((path: string) => string) | null;
+  private resolveTaskFilesFn: TaskFilesResolver | null;
+  private resolveIntegrationBranchFn: IntegrationBranchResolver | null;
+  private resolvePermissivenessFn: PermissivenessResolver | null;
+  private resolveCodebaseReferenceFn: CodebaseReferenceResolver | null;
 
   /**
    * @param engine Template engine for context generation
    * @param enableNewEngine Toggle between new and legacy template systems
    * @param readFileFn Optional file reader for profile loading (Node.js only)
+   * @param resolveTaskFilesFn Optional on-disk task file lookup (Node.js only)
+   * @param resolveIntegrationBranchFn Optional per-checkout integration branch lookup (Node.js only)
+   * @param resolvePermissivenessFn Optional per-checkout permissiveness fragment lookup (Node.js only)
+   * @param resolveCodebaseReferenceFn Optional Codebase Reference section renderer (Node.js only)
    */
   constructor(
     engine: ContextTemplateEngine,
     enableNewEngine: boolean = true,
     readFileFn: ((path: string) => string) | null = null,
+    resolveTaskFilesFn: TaskFilesResolver | null = null,
+    resolveIntegrationBranchFn: IntegrationBranchResolver | null = null,
+    resolvePermissivenessFn: PermissivenessResolver | null = null,
+    resolveCodebaseReferenceFn: CodebaseReferenceResolver | null = null,
   ) {
+    this.resolveTaskFilesFn = resolveTaskFilesFn;
+    this.resolveIntegrationBranchFn = resolveIntegrationBranchFn;
+    this.resolvePermissivenessFn = resolvePermissivenessFn;
+    this.resolveCodebaseReferenceFn = resolveCodebaseReferenceFn;
     this.templateProcessor = new TemplateProcessor();
     this.templateEngine = engine;
     this.enableNewEngine = enableNewEngine;
@@ -71,6 +128,8 @@ export class ContextIntegrator {
         return this.generateWithLegacySystem(project);
       }
     } catch (error: unknown) {
+      // A configured permissiveness level that cannot be applied must fail the build.
+      if (error instanceof PermissivenessFragmentError) throw error;
       console.error('Error generating context from project:', error);
       return this.getErrorContext(project, error);
     }
@@ -88,8 +147,48 @@ export class ContextIntegrator {
       this.templateEngine.updateServicePaths(promptPath, `${base}/${STATEMENTS_FILE_RELATIVE_PATH}`);
     }
 
+    // All lookups read from the checkout being worked in: the worktree's own
+    // path when one is selected, else the project root.
+    const worktree = (project.worktrees ?? []).find((w) => w.id === worktreeId);
+    const checkoutPath = worktree?.worktreePath ?? project.projectPath;
+
     // Map project data to enhanced context data
-    const enhancedData = await this.mapProjectToEnhancedContext(project, worktreeId);
+    const enhancedData = this.mapProjectToEnhancedContext(project, worktreeId);
+
+    // Resolve the slice's real task file(s)
+    if (this.resolveTaskFilesFn && project.fileSlice && checkoutPath) {
+      enhancedData.taskFiles = await this.resolveTaskFilesFn(checkoutPath, project.fileSlice);
+    }
+
+    // Resolve where work in this checkout forks from and merges into
+    if (this.resolveIntegrationBranchFn && checkoutPath) {
+      const integrationBranch = await this.resolveIntegrationBranchFn(checkoutPath);
+      enhancedData.integrationBranch = integrationBranch;
+      enhancedData.targetBranch = integrationBranch || DEFAULT_TARGET_BRANCH;
+    }
+
+    // Resolve the permissiveness fragment for this checkout. Keyed on the same
+    // `instruction` value that selects the instruction prompt; errors propagate.
+    if (this.resolvePermissivenessFn && checkoutPath) {
+      enhancedData.permissivenessFragment = await this.resolvePermissivenessFn(
+        checkoutPath,
+        enhancedData.instruction
+      );
+    }
+
+    // Render the Codebase Reference section. Only when the profile lists one of its variables,
+    // so a build that does not show the section never walks the docs tree.
+    if (this.resolveCodebaseReferenceFn && checkoutPath) {
+      const listed = this.listedReferences(enhancedData.instruction);
+      if (listed.comprehension || listed.docsMap) {
+        enhancedData.codebaseReference = await this.resolveCodebaseReferenceFn(
+          checkoutPath,
+          project.name,
+          project.fileComprehension ?? '',
+          listed,
+        );
+      }
+    }
 
     // Generate using template engine
     return await this.templateEngine.generateContext(enhancedData);
@@ -115,10 +214,10 @@ export class ContextIntegrator {
    * @param project Project data from storage
    * @returns Enhanced context data ready for template engine
    */
-  private async mapProjectToEnhancedContext(project: ProjectData, worktreeId?: string): Promise<EnhancedContextData> {
+  private mapProjectToEnhancedContext(project: ProjectData, worktreeId?: string): EnhancedContextData {
     // Detect available tools and MCP servers
-    const availableTools = await this.detectAvailableTools();
-    const mcpServers = await this.detectMCPServers();
+    const availableTools = this.detectAvailableTools();
+    const mcpServers = this.detectMCPServers();
 
     const enhanced: EnhancedContextData = {
       projectName: project.name || 'Unknown Project',
@@ -134,6 +233,7 @@ export class ContextIntegrator {
       fileHLD: project.fileHLD || '',
       fileSpec: project.fileSpec || '',
       fileConcept: project.fileConcept || '',
+      fileComprehension: project.fileComprehension || '',
       recentEvents: project.customData?.recentEvents || '',
       additionalNotes: project.customData?.additionalNotes || '',
       availableTools,
@@ -159,11 +259,11 @@ export class ContextIntegrator {
   }
 
   /**
-   * Zeros out artifact fields not in the active instruction's profile.
-   * Skips filtering if readFileFn is not set or profiles block is absent.
+   * The variable names the active instruction's profile lists, or null when no profiles are
+   * available (no file reader, no prompt path, or no profiles block): callers then skip filtering.
    */
-  private applyProfileFiltering(data: EnhancedContextData, instruction: string): void {
-    if (!this.readFileFn || !this.cachedPromptPath) return;
+  private activeProfileVariables(instruction: string): string[] | null {
+    if (!this.readFileFn || !this.cachedPromptPath) return null;
 
     // Lazy-load and cache profiles
     if (this.cachedProfiles === null) {
@@ -176,14 +276,33 @@ export class ContextIntegrator {
     }
 
     const profiles = this.cachedProfiles;
-    if (Object.keys(profiles).length === 0) return;
+    if (Object.keys(profiles).length === 0) return null;
 
-    const allowedVars = this.profileParser.getProfileForInstruction(instruction, profiles);
-    for (const field of ARTIFACT_FIELDS) {
+    return this.profileParser.getProfileForInstruction(instruction, profiles);
+  }
+
+  /**
+   * Zeros out artifact fields not in the active instruction's profile.
+   * Skips filtering if profiles are unavailable.
+   */
+  private applyProfileFiltering(data: EnhancedContextData, instruction: string): void {
+    const allowedVars = this.activeProfileVariables(instruction);
+    if (!allowedVars) return;
+
+    for (const field of getFieldNamesByGroup('artifacts')) {
       if (!allowedVars.includes(field)) {
         (data as unknown as Record<string, unknown>)[field] = '';
       }
     }
+  }
+
+  /** Which Codebase Reference variables the active profile lists. Neither, when no profiles are available. */
+  private listedReferences(instruction: string): ListedReferences {
+    const vars = this.activeProfileVariables(instruction) ?? [];
+    return {
+      comprehension: vars.includes(CODEBASE_REFERENCE_VARIABLES.comprehension),
+      docsMap: vars.includes(CODEBASE_REFERENCE_VARIABLES.docsMap),
+    };
   }
 
   /**
@@ -271,7 +390,7 @@ Please check the console for detailed error information.`;
    * Detect available tools for the project
    * Currently returns placeholder data - can be enhanced for actual detection
    */
-  private async detectAvailableTools(): Promise<string[]> {
+  private detectAvailableTools(): string[] {
     // Placeholder implementation - can be enhanced to actually detect tools
     return ['npm', 'git', 'vscode'];
   }
@@ -280,7 +399,7 @@ Please check the console for detailed error information.`;
    * Detect available MCP servers for the project
    * Currently returns placeholder data - can be enhanced for actual detection
    */
-  private async detectMCPServers(): Promise<string[]> {
+  private detectMCPServers(): string[] {
     // Placeholder implementation - can be enhanced to detect actual MCP servers
     return ['context7'];
   }

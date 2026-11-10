@@ -131,7 +131,7 @@ export function registerWorktreeTools(server: McpServer): void {
       title: 'Initialize Worktree',
       description:
         'Create a new worktree context for a project. The first worktree triggers forward migration, ' +
-        'moving existing workflow fields into a "default" worktree (range 100-799). Returns the created worktree, ' +
+        'moving existing workflow fields into the default worktree (`isDefault: true`, range 100-799). Returns the created worktree, ' +
         'whether migration occurred, and any index range overlaps.',
       inputSchema: {
         projectId: z.string().optional().describe('Project ID. Omit to resolve from CWD.'),
@@ -227,17 +227,12 @@ export function registerWorktreeTools(server: McpServer): void {
           indexRange = parsed;
         }
 
-        // Collect non-undefined update fields
+        // Collect non-undefined update fields (all args except routing keys)
+        const NON_UPDATE_KEYS = new Set(['projectId', 'worktree', 'indexRange']);
         const updates: Record<string, unknown> = {};
-        const fieldKeys = [
-          'name', 'worktreePath', 'archDoc', 'slicePlan',
-          'developmentPhase', 'activeSlice', 'activeTaskFile',
-          'instruction', 'workType', 'rangeOverride',
-        ] as const;
-
-        for (const key of fieldKeys) {
-          if (args[key] !== undefined) {
-            updates[key] = args[key];
+        for (const [key, value] of Object.entries(args)) {
+          if (!NON_UPDATE_KEYS.has(key) && value !== undefined) {
+            updates[key] = value;
           }
         }
         if (indexRange) {
@@ -268,7 +263,11 @@ export function registerWorktreeTools(server: McpServer): void {
       title: 'Remove Worktree',
       description:
         'Remove a worktree context from a project. If this is the last worktree, triggers reverse migration ' +
-        'restoring workflow fields to the project. Returns the removed worktree and whether migration occurred.',
+        'restoring workflow fields to the project. Returns the removed worktree and whether migration occurred. ' +
+        'When other worktrees remain, restoredRange is the default worktree\'s (`isDefault: true`) new range after ' +
+        'the removed range was handed back to it; rangeNotRestored { reason, defaultRange } says why it was not ' +
+        '(range-override, not-adjacent, would-overlap). defaultWorktree { id, name } identifies that worktree ' +
+        'whenever either is present.',
       inputSchema: {
         projectId: z.string().optional().describe('Project ID. Omit to resolve from CWD.'),
         worktree: z.string().describe('Worktree ID or name to remove.'),
